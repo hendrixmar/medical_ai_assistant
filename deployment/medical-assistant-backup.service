@@ -1,0 +1,9 @@
+[Unit]
+Description=Encrypted off-server Medical Assistant backup
+
+[Service]
+Type=oneshot
+EnvironmentFile=%h/.config/medical-assistant/backup.env
+ExecStart=/usr/bin/bash ${MEDICAL_ASSISTANT_ROOT}/deployment/backup.sh
+NoNewPrivileges=true
+PrivateTmp=true

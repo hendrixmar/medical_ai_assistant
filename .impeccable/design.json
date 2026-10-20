@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-14T01:24:09Z",
+  "title": "Design System: Doctor UI — narrow issue 4 shell",
+  "extensions": {
+    "breakpoints": [{ "name": "mobile", "value": "36rem" }]
+  },
+  "components": [
+    {
+      "name": "Primary submit",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Full-width login action; standalone visual example, not an authentication flow.",
+      "html": "<button class=\"ds-primary\" type=\"submit\">Iniciar sesión</button>",
+      "css": ".ds-primary { font: 600 1rem/1.6 system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; min-height: 48px; width: 100%; padding: 0.625rem 1rem; border: 1px solid var(--accent, #245a91); border-radius: 5px; background: var(--accent, #245a91); color: var(--surface, #ffffff); cursor: pointer; } .ds-primary:hover, .ds-primary:active { background: var(--accent-hover, #194570); border-color: var(--accent-hover, #194570); } .ds-primary:focus-visible { outline: 3px solid var(--accent, #245a91); outline-offset: 4px; }"
+    },
+    {
+      "name": "Logout button",
+      "kind": "button",
+      "refersTo": "button-logout",
+      "description": "Neutral outlined logout action; shown without its POST form.",
+      "html": "<button class=\"ds-logout\" type=\"submit\">Cerrar sesión</button>",
+      "css": ".ds-logout { font: 600 1rem/1.6 system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; display: inline-flex; align-items: center; justify-content: center; min-height: 48px; padding: 0.625rem 1rem; border: 1px solid var(--control-line, #748191); border-radius: 5px; background: var(--surface, #ffffff); color: var(--text, #202b38); cursor: pointer; } .ds-logout:hover, .ds-logout:active { background: var(--background, #f7f8fa); } .ds-logout:focus-visible { outline: 3px solid var(--accent, #245a91); outline-offset: 4px; }"
+    },
+    {
+      "name": "Authenticator code field",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "One labeled native text field with linked help and one-time-code autocomplete; no custom hover state.",
+      "html": "<div class=\"ds-field\"><label for=\"ds-code\">Código de autenticación</label><p id=\"ds-code-help\">Escribe los 6 dígitos que muestra tu aplicación de autenticación.</p><input id=\"ds-code\" name=\"code\" type=\"text\" inputmode=\"numeric\" autocomplete=\"one-time-code\" pattern=\"[0-9]{6}\" minlength=\"6\" maxlength=\"6\" aria-describedby=\"ds-code-help\" required></div>",
+      "css": ".ds-field { font: 1rem/1.6 system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: var(--text, #202b38); margin-bottom: 1.5rem; } .ds-field label { display: block; font-weight: 600; margin-bottom: 0.5rem; } .ds-field p { margin: 0 0 0.625rem; max-width: 68ch; overflow-wrap: break-word; font-size: 0.9375rem; color: var(--muted, #526071); } .ds-field input { font: inherit; box-sizing: border-box; width: 100%; min-height: 48px; padding: 0.625rem 0.75rem; border: 1px solid var(--control-line, #748191); border-radius: 5px; color: var(--text, #202b38); background: var(--surface, #ffffff); caret-color: var(--accent, #245a91); } .ds-field input:focus-visible { outline: 3px solid var(--accent, #245a91); outline-offset: 4px; }"
+    },
+    {
+      "name": "Top navigation",
+      "kind": "nav",
+      "description": "Wrapping navigation with current-page indication; logout form retained as markup only.",
+      "html": "<header class=\"ds-header\"><nav class=\"ds-nav\" aria-label=\"Navegación principal\"><a class=\"ds-dashboard\" href=\"/dashboard\" aria-current=\"page\">Mi consultorio</a><a href=\"/settings\">Configuración</a><form method=\"post\" action=\"/logout\"><button type=\"submit\">Cerrar sesión</button></form></nav></header>",
+      "css": ".ds-header { background: var(--surface, #ffffff); border-bottom: 1px solid var(--line, #d7dde4); } .ds-nav { font: 1rem/1.6 system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; box-sizing: border-box; max-width: 58rem; margin: 0 auto; padding: 0.75rem 1.5rem; display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem 1.5rem; } .ds-nav a, .ds-nav button { min-height: 48px; display: inline-flex; align-items: center; justify-content: center; color: var(--text, #202b38); } .ds-nav a { text-decoration: underline; text-underline-offset: 0.2em; text-decoration-thickness: 1px; } .ds-nav a:hover, .ds-nav a[aria-current='page'] { text-decoration-thickness: 2px; } .ds-nav a[aria-current='page'], .ds-nav .ds-dashboard { font-weight: 650; } .ds-nav .ds-dashboard { margin-right: auto; } .ds-nav form { margin: 0; } .ds-nav button { font: inherit; font-weight: 600; border: 1px solid var(--control-line, #748191); border-radius: 5px; padding: 0.625rem 1rem; background: var(--surface, #ffffff); cursor: pointer; } .ds-nav button:hover, .ds-nav button:active { background: var(--background, #f7f8fa); } .ds-nav :focus-visible { outline: 3px solid var(--accent, #245a91); outline-offset: 4px; } @media (max-width: 36rem) { .ds-nav { padding-inline: 1.25rem; column-gap: 1.25rem; } .ds-nav .ds-dashboard { flex-basis: 100%; justify-content: flex-start; } }"
+    },
+    {
+      "name": "Expired-form notice",
+      "kind": "custom",
+      "description": "Neutral alert with recovery link. Autofocus is omitted in this isolated preview to avoid stealing panel focus; the page markup includes it.",
+      "html": "<div class=\"ds-error\" role=\"alert\" tabindex=\"-1\">Este formulario venció. <a href=\"/login\">Abre un formulario nuevo</a> para volver a intentarlo.</div>",
+      "css": ".ds-error { font: 1rem/1.6 system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: var(--text, #202b38); margin-top: 1.5rem; padding: 1rem; border: 1px solid var(--control-line, #748191); border-radius: 5px; background: var(--surface, #ffffff); overflow-wrap: break-word; } .ds-error a { min-height: 48px; display: inline-flex; align-items: center; justify-content: center; color: var(--accent, #245a91); text-decoration: underline; text-underline-offset: 0.2em; text-decoration-thickness: 1px; } .ds-error a:hover { color: var(--accent-hover, #194570); text-decoration-thickness: 2px; } .ds-error:focus, .ds-error a:focus-visible { outline: 3px solid var(--accent, #245a91); outline-offset: 4px; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "A Spanish task surface, not a branded analytics dashboard.",
+    "overview": "This records the built login, dashboard and settings placeholder for one Doctor in one Practice. The pinned conventional Operate direction is light neutral surfaces, sober blue actions, system type and native forms. It is a narrow implementation record, not a broader medical brand or a new component library.",
+    "keyCharacteristics": [
+      "Plain Spanish, task-first hierarchy and honest unavailable-feature copy.",
+      "Single-column content, generous controls and wrapping mobile navigation.",
+      "Flat surfaces, visible keyboard focus and no decorative motion or imagery."
+    ],
+    "dos": [
+      "**Do** preserve plain Spanish, native form semantics, visible labels, linked help, keyboard focus and paste/autofill support.",
+      "**Do** preserve the light-neutral/system-font/one-blue-accent direction and the desktop/mobile reading order.",
+      "**Do** distinguish unavailable functionality from an empty live queue, and rendered UI contracts from verified backend behavior."
+    ],
+    "donts": [
+      "**Don't** invent a broader medical brand, Doctor identity, provider endorsement, imagery or decorative dashboard data.",
+      "**Don't** replace this narrow shell with analytics cards, new controls, new status palettes, motion or a broader design system.",
+      "**Don't** treat screenshots, hidden form fields or session copy as proof of authentication, authorization or other backend functionality."
+    ]
+  }
+}

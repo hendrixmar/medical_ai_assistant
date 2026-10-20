@@ -37,7 +37,6 @@ sea-orm = { version = "1.1.19", features = [
   "with-chrono",
   "with-json",
   "with-uuid",
-  "seaography",
 ] }
 sea-orm-migration = { version = "1.1.19", features = ["runtime-tokio-rustls"] }
 
@@ -47,8 +46,10 @@ tracing-subscriber = { version = "0.3.22", features = ["json", "env-filter"] }
 reqwest = { version = "0.13.2", default-features = false, features = [
   "json",
   "form",
+  "rustls",
 ] }
 chrono = { version = "0.4.43", features = ["serde"] }
+chrono-tz = "0.10.4"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 uuid = { version = "1.20.0", features = ["v7", "serde"] }
@@ -60,17 +61,15 @@ utoipa = "5.4.0"
 utoipa-swagger-ui = { version = "9.0.2", features = ["axum"] }
 utoipa-axum = "0.2.0"
 utoipauto = "0.2.0"
-seaography = { version = "~1.1.4", features = [
-  "with-decimal",
-  "with-chrono",
-  "with-postgres-array",
-  "with-uuid",
-] }
-async-graphql-axum = "7.2.1"
-async-graphql = "7.2.1"
-jsonwebtoken = { version = "10.3.0", features = ["rust_crypto"] }
-base64 = "0.22.1"
 bcrypt = "0.18.0"
+aes-gcm = "=0.10.3"
+base64 = "0.22.1"
+getrandom = "=0.3.4"
+sha2 = "0.10.9"
+hmac = "0.12.1"
+subtle = "2.6.1"
+totp-rs = { version = "=6.0.0", default-features = false, features = ["std", "otpauth"] }
+rpassword = "7.4.0"
 validator = { version = "0.20.0", features = ["derive"] }
 
 [dev-dependencies]

@@ -1,0 +1,10 @@
+[Unit]
+Description=Nightly Medical Assistant backup
+
+[Timer]
+OnCalendar=*-*-* 03:00:00 UTC
+Persistent=true
+Unit=medical-assistant-backup.service
+
+[Install]
+WantedBy=timers.target
