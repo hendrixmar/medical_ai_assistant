@@ -1,29 +1,55 @@
+use axum::{body::Body, http::Request};
 use tower_http::{
   classify::{ServerErrorsAsFailures, SharedClassifier},
-  trace::{DefaultMakeSpan, DefaultOnRequest, DefaultOnResponse, TraceLayer},
+  trace::{DefaultOnRequest, DefaultOnResponse, TraceLayer},
 };
-use tracing::Level;
+use tracing::{Level, Span};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
-/// The `EnvFilter` type is used to filter log events based on the value of an environment variable.
-/// In this case, we are using the `try_from_default_env` method to attempt to read the `RUST_LOG` environment variable,
-/// which is used to set the log level for the application.
-/// If the environment variable is not set, we default to the log level of `debug`.
-/// The `RUST_LOG` environment variable is set in the Dockerfile and .env files.
+/// Credentials can appear in dependency TRACE/DEBUG events. Operator RUST_LOG
+/// never widens this allowlist, including explicit reqwest/hyper/sqlx directives.
+pub fn safe_filter() -> EnvFilter {
+  EnvFilter::new("off,server=info")
+}
 pub fn setup_tracing() {
-  let env_filter_layer = EnvFilter::try_from_default_env().unwrap_or_else(|_| "debug".into());
-  let formatting_layer = fmt::layer().json();
   tracing_subscriber::registry()
-    .with(env_filter_layer)
-    .with(formatting_layer)
-    .init()
+    .with(safe_filter())
+    .with(fmt::layer().json())
+    .init();
 }
 
-/// Returns a `TraceLayer` for HTTP requests and responses.
-/// The `TraceLayer` is used to trace requests and responses in the application.
-pub fn trace_layer() -> TraceLayer<SharedClassifier<ServerErrorsAsFailures>> {
+fn request_span(request: &Request<Body>) -> Span {
+  let route = match request.uri().path().trim_end_matches('/') {
+    "/api/v1/health" => "health",
+    "/login" => "login",
+    "/logout" => "logout",
+    "/dashboard" => "dashboard",
+    "/settings" => "settings",
+    "/settings/google" => "google_settings",
+    "/settings/google/connect" => "google_connect",
+    "/settings/google/callback" => "google_callback",
+    "/settings/google/calendars" => "google_selection",
+    "/settings/google/probe" => "google_probe",
+    _ => "other",
+  };
+  let method = match request.method().as_str() {
+    "GET" => "GET",
+    "POST" => "POST",
+    "HEAD" => "HEAD",
+    "PUT" => "PUT",
+    "DELETE" => "DELETE",
+    "OPTIONS" => "OPTIONS",
+    "PATCH" => "PATCH",
+    _ => "other",
+  };
+  // Do not trust the propagated caller request ID for log correlation.
+  tracing::info_span!("request", route, method, correlation = %uuid::Uuid::now_v7())
+}
+
+type SafeTrace = TraceLayer<SharedClassifier<ServerErrorsAsFailures>, fn(&Request<Body>) -> Span>;
+pub fn trace_layer() -> SafeTrace {
   TraceLayer::new_for_http()
-    .make_span_with(DefaultMakeSpan::new().level(Level::INFO))
+    .make_span_with(request_span as fn(&Request<Body>) -> Span)
     .on_request(DefaultOnRequest::new().level(Level::INFO))
     .on_response(DefaultOnResponse::new().level(Level::INFO))
 }

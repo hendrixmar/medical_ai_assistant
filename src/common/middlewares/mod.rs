@@ -1,4 +1,3 @@
-pub mod basic_auth;
 mod cors;
 mod normalize_path;
 mod request_id;

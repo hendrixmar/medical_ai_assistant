@@ -1,0 +1,96 @@
+name: medical-assistant-vps
+
+# Create the env file outside the repository with umask 077. Generate independent
+# URL-safe database passwords with openssl rand -hex 32; never reuse live service data.
+# PUBLIC_ORIGIN/Doctor keys and WAHA webhook/session cutover remain operator gates.
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: ${POSTGRES_ADMIN_USER:?Set POSTGRES_ADMIN_USER in the operator env file}
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:?Set POSTGRES_ADMIN_PASSWORD in the operator env file}
+      APP_DB_NAME: ${APP_DB_NAME:?Set APP_DB_NAME in the operator env file}
+      APP_DB_USER: ${APP_DB_USER:?Set APP_DB_USER in the operator env file}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?Set APP_DB_PASSWORD in the operator env file}
+      WAHA_DB_USER: ${WAHA_DB_USER:?Set WAHA_DB_USER in the operator env file}
+      WAHA_DB_PASSWORD: ${WAHA_DB_PASSWORD:?Set WAHA_DB_PASSWORD in the operator env file}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-postgres.sh:/docker-entrypoint-initdb.d/10-practice-databases.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    networks:
+      - app_private
+
+  waha:
+    image: devlikeapro/waha:2026.9.2
+    restart: unless-stopped
+    environment:
+      WAHA_API_KEY: ${WAHA_API_KEY:?Set WAHA_API_KEY in the operator env file}
+      WAHA_DASHBOARD_USERNAME: ${WAHA_DASHBOARD_USERNAME:?Set WAHA_DASHBOARD_USERNAME in the operator env file}
+      WAHA_DASHBOARD_PASSWORD: ${WAHA_DASHBOARD_PASSWORD:?Set WAHA_DASHBOARD_PASSWORD in the operator env file}
+      WHATSAPP_DEFAULT_ENGINE: GOWS
+      # Pairing codes are logged at info by pinned GOWS; keep warn, and DEBUG must be absent (its presence enables debug).
+      WAHA_LOG_LEVEL: warn
+      # Match the application's media-download origin; WAHA uses this for returned media URLs.
+      WAHA_BASE_URL: http://127.0.0.1:3000
+      WHATSAPP_SESSIONS_POSTGRESQL_URL: postgres://${WAHA_DB_USER}:${WAHA_DB_PASSWORD}@db:5432/postgres?sslmode=disable
+      WAHA_MEDIA_STORAGE: POSTGRESQL
+      WAHA_MEDIA_POSTGRESQL_URL: postgres://${WAHA_DB_USER}:${WAHA_DB_PASSWORD}@db:5432/postgres?sslmode=disable
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${WAHA_PORT:-13000}:3000"
+      # The app shares this private namespace so its loopback-only WAHA URL is valid.
+      - "127.0.0.1:${APP_PORT:-18080}:8080"
+    networks:
+      - app_private
+
+  app:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    # WahaConfig permits plaintext HTTP only to loopback. The app shares WAHA's
+    # namespace, while both host-published ports remain bound to 127.0.0.1.
+    network_mode: service:waha
+    # Keep optional Google/Claude inputs absent by omitting them from this private
+    # app-only file. Do not reuse the Compose file containing database admin secrets.
+    env_file:
+      - ${APP_PROVIDER_ENV_FILE:?Set APP_PROVIDER_ENV_FILE to a private app-only provider env file; it may be empty}
+    depends_on:
+      db:
+        condition: service_healthy
+      waha:
+        condition: service_started
+    environment:
+      APP_ENV: production
+      PORT: "8080"
+      BIND_ADDRESS: 0.0.0.0
+      DATABASE_URL: postgres://${APP_DB_USER}:${APP_DB_PASSWORD}@db:5432/${APP_DB_NAME}?sslmode=disable
+      DATABASE_POOL_MAX_SIZE: ${DATABASE_POOL_MAX_SIZE:-20}
+      DATABASE_TIMEOUT: "5"
+      DATABASE_RUN_MIGRATIONS: "true"
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?Set PUBLIC_ORIGIN to the exact private HTTPS origin}
+      DOCTOR_TOTP_KEY: ${DOCTOR_TOTP_KEY:?Set the stable operator-provisioned DOCTOR_TOTP_KEY}
+      WAHA_BASE_URL: http://127.0.0.1:3000
+      WAHA_API_KEY: ${WAHA_API_KEY:?Set WAHA_API_KEY in the operator env file}
+      WAHA_WEBHOOK_HMAC_KEY: ${WAHA_WEBHOOK_HMAC_KEY:?Set WAHA_WEBHOOK_HMAC_KEY in the operator env file}
+      # No live text dispatch by default; operator/legal/provider gates remain open.
+      WAHA_OUTBOUND_ENABLED: ${WAHA_OUTBOUND_ENABLED:-false}
+      WAHA_TAKEOVER_ENABLED: ${WAHA_TAKEOVER_ENABLED:-false}
+      WAHA_CONTACT_REPLIES_PER_HOUR: ${WAHA_CONTACT_REPLIES_PER_HOUR:-20}
+
+volumes:
+  postgres_data:
+
+networks:
+  app_private:
+    driver: bridge

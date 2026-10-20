@@ -1,0 +1,803 @@
+:root {
+  color-scheme: light;
+  --surface: #ffffff;
+  --background: #f7f8fa;
+  --text: #202b38;
+  --muted: #526071;
+  --accent: #245a91;
+  --accent-hover: #194570;
+  --line: #d7dde4;
+  --control-line: #748191;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: var(--text);
+  background: var(--background);
+  line-height: 1.6;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-size: 1rem;
+}
+
+h1,
+h2,
+p {
+  margin: 0;
+  overflow-wrap: break-word;
+}
+
+h1 {
+  font-size: 1.75rem;
+  line-height: 1.25;
+  font-weight: 650;
+}
+
+h2 {
+  font-size: 1.25rem;
+  line-height: 1.4;
+  font-weight: 650;
+}
+
+p {
+  max-width: 68ch;
+}
+
+a {
+  color: var(--accent);
+  text-underline-offset: 0.2em;
+  text-decoration-thickness: 1px;
+}
+
+a:hover {
+  color: var(--accent-hover);
+  text-decoration-thickness: 2px;
+}
+
+:focus-visible,
+.form-error:focus {
+  outline: 3px solid var(--accent);
+  outline-offset: 4px;
+}
+
+::selection {
+  color: var(--surface);
+  background: var(--accent);
+}
+
+button,
+input {
+  font: inherit;
+}
+
+button,
+.navigation a,
+.text-link,
+.form-error a,
+.skip-link {
+  min-height: 48px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+button {
+  cursor: pointer;
+  border: 1px solid var(--control-line);
+  border-radius: 5px;
+  padding: 0.625rem 1rem;
+  font-weight: 600;
+}
+
+.primary-button {
+  background: var(--accent);
+  color: var(--surface);
+  border-color: var(--accent);
+  width: 100%;
+}
+
+.primary-button:hover,
+.primary-button:active {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+.login-shell {
+  max-width: 28rem;
+  margin: 4rem auto;
+  padding: 0 1.25rem;
+}
+
+.intro {
+  margin-top: 0.75rem;
+  color: var(--muted);
+}
+
+.login-form {
+  margin-top: 2rem;
+}
+
+.field {
+  margin-bottom: 1.5rem;
+}
+
+label {
+  display: block;
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+}
+
+.field-hint,
+.session-hint {
+  color: var(--muted);
+  font-size: 0.9375rem;
+}
+
+.field-hint {
+  margin-bottom: 0.625rem;
+}
+
+input:not([type="hidden"]) {
+  width: 100%;
+  min-height: 48px;
+  padding: 0.625rem 0.75rem;
+  border: 1px solid var(--control-line);
+  border-radius: 5px;
+  color: var(--text);
+  background: var(--surface);
+  caret-color: var(--accent);
+}
+
+.session-hint {
+  margin-top: 1rem;
+}
+
+.form-error {
+  margin-top: 1.5rem;
+  padding: 1rem;
+  border: 1px solid var(--control-line);
+  border-radius: 5px;
+  background: var(--surface);
+  overflow-wrap: break-word;
+}
+
+.site-header {
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+
+.navigation {
+  max-width: 58rem;
+  margin: 0 auto;
+  padding: 0.75rem 1.5rem;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.5rem;
+}
+
+.navigation a {
+  color: var(--text);
+}
+
+.navigation a[aria-current="page"] {
+  font-weight: 650;
+  text-decoration-thickness: 2px;
+}
+
+.navigation .dashboard-link {
+  margin-right: auto;
+  font-weight: 650;
+}
+
+.navigation form {
+  margin: 0;
+}
+
+.logout-button {
+  background: var(--surface);
+  color: var(--text);
+}
+
+.logout-button:hover,
+.logout-button:active {
+  background: var(--background);
+}
+
+.page-shell {
+  max-width: 58rem;
+  margin: 0 auto;
+  padding: 2.5rem 1.5rem 4rem;
+}
+
+.dashboard-section {
+  padding-top: 1.75rem;
+  margin-top: 2rem;
+  border-top: 1px solid var(--line);
+}
+
+.empty-title {
+  margin-top: 1rem;
+}
+
+.muted {
+  color: var(--muted);
+  margin-top: 0.5rem;
+}
+
+.text-link {
+  margin-top: 1rem;
+}
+
+.skip-link {
+  position: absolute;
+  top: 0.5rem;
+  left: 1.5rem;
+  padding: 0.5rem 1rem;
+  transform: translateY(-200%);
+  background: var(--surface);
+}
+
+.skip-link:focus {
+  transform: translateY(0);
+}
+
+/* Settings extend the existing native form vocabulary without changing the shell. */
+.settings-steps {
+  margin-top: 1.5rem;
+  padding-block: 1rem;
+  border-block: 1px solid var(--line);
+}
+
+.settings-steps ol {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.75rem 1.5rem;
+  margin: 0;
+  padding-left: 1.5rem;
+}
+
+.settings-steps li {
+  padding-left: 0.25rem;
+}
+
+.settings-steps a {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  min-height: 48px;
+  overflow-wrap: anywhere;
+}
+
+.settings-steps a[aria-current="step"] {
+  font-weight: 650;
+  text-decoration-thickness: 2px;
+}
+
+.step-state {
+  color: var(--muted);
+  font-size: 0.9375rem;
+  font-weight: 400;
+}
+
+.settings-content,
+.settings-message {
+  margin-top: 1.5rem;
+}
+
+.settings-form,
+.service-list,
+.timezone-example {
+  max-width: 42rem;
+}
+
+.settings-form {
+  margin-top: 1.5rem;
+}
+
+.settings-form select,
+.settings-form textarea {
+  font: inherit;
+  width: 100%;
+  max-width: 100%;
+  min-height: 48px;
+  padding: 0.625rem 0.75rem;
+  border: 1px solid var(--control-line);
+  border-radius: 5px;
+  color: var(--text);
+  background: var(--surface);
+  caret-color: var(--accent);
+}
+
+.settings-form textarea {
+  display: block;
+  resize: vertical;
+}
+
+.settings-form input,
+.settings-form select,
+.settings-form textarea,
+.settings-steps a {
+  scroll-margin-block: 1rem;
+}
+
+.field-pair,
+.day-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 1.5rem;
+}
+
+.day-fields {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+}
+
+.field-pair .field,
+.day-fields .field {
+  min-width: 0;
+}
+
+.weekday {
+  min-width: 0;
+  padding: 1rem 0 0;
+  margin: 1rem 0 0;
+  border: 0;
+  border-top: 1px solid var(--line);
+}
+
+.weekday legend {
+  padding: 0 0.75rem 0 0;
+  font-weight: 650;
+}
+
+.field-error {
+  margin-top: 0.5rem;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.form-error ul {
+  margin-bottom: 0;
+  padding-left: 1.25rem;
+}
+
+.form-error a {
+  justify-content: flex-start;
+}
+
+.form-heading {
+  margin: 2rem 0 0.75rem;
+  font-size: 1.25rem;
+  line-height: 1.4;
+  font-weight: 650;
+}
+
+.form-actions {
+  margin-top: 1.5rem;
+}
+
+.form-actions .primary-button {
+  width: auto;
+  max-width: 100%;
+}
+
+.form-actions .text-link,
+.continue-link {
+  display: flex;
+  width: fit-content;
+}
+
+.service-list {
+  list-style: none;
+  margin-block: 1rem 0;
+  padding: 0;
+}
+
+.service-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding-block: 1rem;
+  border-bottom: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
+
+.service-list li > div {
+  min-width: 0;
+}
+
+.service-list .text-link {
+  flex-shrink: 0;
+  margin: 0;
+  padding-inline: 0.75rem;
+}
+
+.connections-note ul {
+  padding-left: 1.25rem;
+}
+
+/* WhatsApp uses the same plain sections and explicit, native actions. */
+.connection-status,
+.connection-phone,
+.connection-instructions {
+  overflow-wrap: anywhere;
+}
+
+.connection-phone {
+  margin-top: 1rem;
+}
+
+.connection-instructions {
+  max-width: 68ch;
+  margin-block: 1rem;
+  padding-left: 1.5rem;
+}
+
+.connection-instructions li + li {
+  margin-top: 0.5rem;
+}
+
+.connection-qr {
+  display: block;
+  width: 280px;
+  max-width: 100%;
+  height: auto;
+  aspect-ratio: 1;
+  padding: 0.75rem;
+  border: 1px solid var(--control-line);
+  background: var(--surface);
+}
+
+.connections-note .text-link {
+  margin: 0;
+  justify-content: flex-start;
+}
+
+/* Conversation attention is a divided list, not an analytics surface. */
+.attention-section,
+.dashboard-notice,
+.privacy-notice {
+  overflow-wrap: anywhere;
+}
+
+.dashboard-notice,
+.queue-summary {
+  margin-top: 1rem;
+}
+
+.attention-list {
+  list-style: none;
+  margin: 1.5rem 0 0;
+  padding: 0;
+}
+
+.attention-list li {
+  padding-block: 1.5rem;
+  border-top: 1px solid var(--line);
+}
+
+.attention-list h3 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 650;
+  line-height: 1.4;
+}
+
+.attention-contact {
+  margin-top: 0.5rem;
+}
+
+.attention-time {
+  color: var(--muted);
+  font-size: 0.9375rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.attention-list p,
+.dashboard-notice {
+  overflow-wrap: anywhere;
+}
+
+.attention-link {
+  display: inline-block;
+  margin-block-start: 0.5rem;
+  margin-inline-end: 1rem;
+}
+
+.attention-action {
+  margin-top: 1rem;
+}
+
+.attention-action .primary-button {
+  width: auto;
+  max-width: 100%;
+}
+
+.attention-pagination {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.5rem;
+  margin-top: 1.5rem;
+}
+
+.attention-pagination .text-link {
+  margin: 0;
+}
+
+/* Doctor Number keeps the native settings surface and copyable, contiguous digits. */
+.doctor-number,
+.doctor-number p {
+  overflow-wrap: anywhere;
+}
+
+.doctor-number-code {
+  margin-block: 0.5rem 1rem;
+  font-size: 1.75rem;
+  line-height: 1.4;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  user-select: all;
+}
+
+.doctor-number .form-error h3 {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+  font-weight: 650;
+}
+
+.doctor-number-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 1.5rem;
+  margin-top: 1rem;
+}
+
+/* Google extends native settings; remote labels never define layout width. */
+.google-settings,
+.google-settings p,
+.google-settings li,
+.google-settings label {
+  overflow-wrap: anywhere;
+}
+
+.google-settings .form-error h3,
+.google-attention h3 {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+  font-weight: 650;
+  line-height: 1.4;
+}
+
+.google-blocking {
+  min-width: 0;
+  margin: 0 0 1.5rem;
+  padding: 0;
+  border: 0;
+}
+
+.google-blocking legend {
+  padding: 0;
+  margin-bottom: 0.5rem;
+  font-weight: 600;
+}
+
+.google-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-height: 48px;
+  margin: 0;
+  padding-block: 0.5rem;
+  font-weight: 400;
+  cursor: pointer;
+}
+
+.google-checkbox input[type="checkbox"] {
+  flex: 0 0 1.25rem;
+  width: 1.25rem;
+  height: 1.25rem;
+  min-height: 0;
+  padding: 0;
+  accent-color: var(--accent);
+}
+
+.google-checkbox span {
+  min-width: 0;
+}
+
+.google-saved-list {
+  padding-left: 1.5rem;
+}
+
+.google-attention {
+  margin-block: 1.5rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--line);
+}
+
+/* Contact histories and Appointment records extend the native divided-list surface. */
+.appointment-list,
+.contact-list,
+.conversation-list,
+.appointment-history {
+  list-style: none;
+  margin: 1.5rem 0 0;
+  padding: 0;
+}
+
+.appointment-list li,
+.contact-list li,
+.conversation-message,
+.appointment-history li {
+  min-width: 0;
+  padding-block: 1.5rem;
+  border-top: 1px solid var(--line);
+}
+
+.appointment-list h2,
+.appointment-list h3,
+.contact-list h2,
+.conversation-message h3,
+.appointment-history h3 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 650;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.appointment-period {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.5rem;
+  margin-top: 1.5rem;
+}
+
+.appointment-period a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 48px;
+}
+
+.appointment-period a[aria-current="page"] {
+  font-weight: 650;
+  text-decoration-thickness: 2px;
+}
+
+.appointment-time,
+.contact-last-activity,
+.message-time {
+  color: var(--muted);
+  font-size: 0.9375rem;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.appointment-facts {
+  display: grid;
+  gap: 0;
+  max-width: 42rem;
+  margin: 1rem 0 0;
+}
+
+.appointment-facts div {
+  display: grid;
+  grid-template-columns: minmax(9rem, 1fr) minmax(0, 2fr);
+  gap: 0.5rem 1rem;
+  padding-block: 0.75rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.appointment-facts dt {
+  font-weight: 600;
+}
+
+.appointment-facts dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.appointment-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1rem;
+  margin-top: 1.5rem;
+}
+
+.appointment-actions form {
+  min-width: 0;
+  margin: 0;
+}
+
+.appointment-actions .primary-button {
+  width: auto;
+  max-width: 100%;
+}
+
+.appointment-url,
+.message-content {
+  max-width: 68ch;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.message-content {
+  margin-top: 0.75rem;
+}
+
+.message-content p + p {
+  margin-top: 0.5rem;
+}
+
+.message-appointment,
+.receipt-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 48px;
+  margin-right: 1rem;
+}
+
+.message-status {
+  margin-top: 0.5rem;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.conversation-message p,
+.appointment-history p,
+.appointment-list p,
+.contact-list p {
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 36rem) {
+  .settings-steps ol {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .field-pair,
+  .day-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .form-actions .primary-button,
+  .attention-action .primary-button {
+    width: 100%;
+  }
+
+  .login-shell {
+    margin-top: 2.5rem;
+  }
+
+  .navigation {
+    padding-inline: 1.25rem;
+    column-gap: 1.25rem;
+  }
+
+  .navigation .dashboard-link {
+    flex-basis: 100%;
+    justify-content: flex-start;
+  }
+
+  .page-shell {
+    padding: 2rem 1.25rem 3rem;
+  }
+  .appointment-facts div {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .appointment-actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .appointment-actions form,
+  .appointment-actions .primary-button {
+    width: 100%;
+  }
+}
