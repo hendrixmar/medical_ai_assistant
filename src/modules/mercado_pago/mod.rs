@@ -13,10 +13,10 @@ mod worker_tests;
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum Error {
-  #[error("Invalid Stripe request")]
+  #[error("Invalid Mercado Pago request")]
   Invalid,
-  #[error("Stripe rejected the request")]
+  #[error("Mercado Pago rejected the request")]
   Rejected,
-  #[error("Stripe unavailable")]
+  #[error("Mercado Pago unavailable")]
   Unavailable,
 }

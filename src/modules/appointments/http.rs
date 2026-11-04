@@ -752,6 +752,15 @@ async fn load_detail(
       "SELECT EXISTS(SELECT FROM attention_items WHERE appointment_id=$1 AND kind='refund_due' AND resolved_at IS NULL) AS pending",
       vec![appointment_id.into()],
     )).await?.ok_or_else(|| DbErr::Custom("Refund state unavailable".into()))?.try_get::<bool>("", "pending")?;
+  let mercado_pago_refunds = if state.mercado_pago.is_some() {
+    crate::modules::mercado_pago::store::refundable_payments(&state.db.conn, appointment_id)
+      .await?
+      .into_iter()
+      .map(|payment| payment.to_string())
+      .collect()
+  } else {
+    Vec::new()
+  };
   Ok(Some(DetailView {
     id: appointment.id.to_string(),
     contact_id: appointment.contact_id.to_string(),
@@ -778,6 +787,7 @@ async fn load_detail(
     can_cancel: active_upcoming,
     can_reschedule: active_upcoming,
     can_resolve_refund,
+    mercado_pago_refunds,
     receipts,
     history,
   }))
@@ -829,6 +839,14 @@ fn history_action(kind: &str) -> &'static str {
     "late_receipt_verified_refund" => "Se requiere gestionar el reembolso del pago tardío",
     "late_receipt_clarification_requested" => "Se solicitó aclarar el comprobante tardío",
     "refund_resolved" => "Reembolso registrado como resuelto por el doctor",
+    "payment_verified_mercado_pago" => "Pago confirmado con Mercado Pago",
+    "mercado_pago_payment_late" => "Pago tardío recibido en Mercado Pago",
+    "mercado_pago_payment_duplicate" => "Pago duplicado recibido en Mercado Pago",
+    "mercado_pago_payment_mismatch" => "Pago de Mercado Pago que no coincide con la cita",
+    "mercado_pago_payment_reversed" => "Mercado Pago reporta reembolso o contracargo externo",
+    "mercado_pago_refund_requested" => "El doctor solicitó reembolsar con Mercado Pago",
+    "mercado_pago_refunded" => "Reembolso emitido por Mercado Pago",
+    "mercado_pago_refund_failed" => "Mercado Pago rechazó el reembolso",
     _ => "Cambio registrado",
   }
 }

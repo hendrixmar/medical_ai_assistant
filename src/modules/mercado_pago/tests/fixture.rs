@@ -7,7 +7,7 @@ use crate::{
       tests::{self, TestClock},
       Clock,
     },
-    stripe::{client::Client, config::StripeConfig},
+    mercado_pago::{client::Client, config::MercadoPagoConfig, store},
     whatsapp::inbox::sql,
   },
 };
@@ -30,104 +30,112 @@ use std::{
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-const ACCOUNT_ID: &str = "acct_fixture";
-const PAYMENT_URL: &str = "https://buy.stripe.com/test_link_fixture";
+pub(crate) const USER_ID: i64 = 4242;
+pub(crate) const CHECKOUT_URL: &str =
+  "https://www.mercadopago.com.mx/checkout/v1/redirect?pref_id=fixture";
 
 #[derive(Clone, Debug)]
 pub(crate) struct CapturedRequest {
   pub method: String,
   pub path: String,
   pub query: HashMap<String, String>,
-  pub form: HashMap<String, String>,
-  pub stripe_account: Option<String>,
+  pub body: Value,
+  pub idempotency_key: Option<String>,
 }
 
 #[derive(Default)]
 pub(crate) struct Provider {
   pub requests: Mutex<Vec<CapturedRequest>>,
-  pub sessions: Mutex<HashMap<String, Vec<Value>>>,
-  account_ready: Mutex<(bool, bool)>,
+  /// external_reference -> payment ids returned by search.
+  pub searches: Mutex<HashMap<String, Vec<i64>>>,
+  /// payment id -> full payment body.
+  pub payments: Mutex<HashMap<i64, Value>>,
   pub unavailable: AtomicBool,
-  prices: AtomicUsize,
-  links: AtomicUsize,
-}
-impl Provider {
-  pub async fn set_account_status(&self, charges_enabled: bool, details_submitted: bool) {
-    *self.account_ready.lock().await = (charges_enabled, details_submitted);
-  }
+  pub unauthorized: AtomicBool,
+  pub refund_rejected: AtomicBool,
+  preferences: AtomicUsize,
 }
 
 async fn handle(State(provider): State<Arc<Provider>>, request: Request<Body>) -> Response {
   let (parts, body) = request.into_parts();
   let bytes = to_bytes(body, 64 * 1024).await.unwrap();
-  let query = pairs(parts.uri.query().unwrap_or_default());
-  let form = pairs(std::str::from_utf8(&bytes).unwrap_or_default());
+  let query: HashMap<String, String> = reqwest::Url::parse(&format!(
+    "http://fixture.invalid/?{}",
+    parts.uri.query().unwrap_or_default()
+  ))
+  .unwrap()
+  .query_pairs()
+  .into_owned()
+  .collect();
   let path = parts.uri.path().to_owned();
   let method = parts.method.to_string();
-  let stripe_account = parts
-    .headers
-    .get("stripe-account")
-    .and_then(|value| value.to_str().ok())
-    .map(str::to_owned);
   provider.requests.lock().await.push(CapturedRequest {
     method: method.clone(),
     path: path.clone(),
     query: query.clone(),
-    form: form.clone(),
-    stripe_account,
+    body: serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    idempotency_key: parts
+      .headers
+      .get("x-idempotency-key")
+      .and_then(|value| value.to_str().ok())
+      .map(str::to_owned),
   });
   if provider.unavailable.load(Ordering::SeqCst) {
     return StatusCode::SERVICE_UNAVAILABLE.into_response();
   }
-  match (method.as_str(), path.as_str()) {
-    ("POST", "/v1/accounts") => Json(json!({"id":"acct_fixture"})).into_response(),
-    ("POST", "/v1/account_links") => Json(json!({
-      "url":"https://connect.stripe.com/setup/test_onboarding"
-    }))
-    .into_response(),
-    ("GET", "/v1/accounts/acct_fixture") => {
-      let (charges_enabled, details_submitted) = *provider.account_ready.lock().await;
-      Json(json!({
-        "charges_enabled":charges_enabled,
-        "details_submitted":details_submitted
-      }))
-      .into_response()
+  if provider.unauthorized.load(Ordering::SeqCst) {
+    return StatusCode::UNAUTHORIZED.into_response();
+  }
+  let segments: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+  match (method.as_str(), segments.as_slice()) {
+    ("GET", ["users", "me"]) => Json(json!({"id": USER_ID})).into_response(),
+    ("POST", ["checkout", "preferences"]) => {
+      let id = provider.preferences.fetch_add(1, Ordering::SeqCst) + 1;
+      Json(json!({"id": format!("{USER_ID}-pref{id}"), "init_point": CHECKOUT_URL})).into_response()
     }
-    ("POST", "/v1/prices") => {
-      let id = provider.prices.fetch_add(1, Ordering::SeqCst) + 1;
-      Json(json!({"id":format!("price_fixture{id}")})).into_response()
-    }
-    ("POST", "/v1/payment_links") => {
-      let id = provider.links.fetch_add(1, Ordering::SeqCst) + 1;
-      Json(json!({"id":format!("plink_fixture{id}"),"url":PAYMENT_URL})).into_response()
-    }
-    ("GET", "/v1/checkout/sessions") => {
-      let payment_link = query
-        .get("payment_link")
-        .map(String::as_str)
-        .unwrap_or_default();
-      let data = provider
-        .sessions
+    ("PUT", ["checkout", "preferences", id]) => Json(json!({"id": id})).into_response(),
+    ("GET", ["v1", "payments", "search"]) => {
+      let ids = provider
+        .searches
         .lock()
         .await
-        .get(payment_link)
+        .get(
+          query
+            .get("external_reference")
+            .map(String::as_str)
+            .unwrap_or_default(),
+        )
         .cloned()
         .unwrap_or_default();
-      Json(json!({"data":data})).into_response()
+      let payments = provider.payments.lock().await;
+      let results: Vec<Value> = ids
+        .iter()
+        .filter_map(|id| payments.get(id).cloned())
+        .collect();
+      Json(json!({"results": results})).into_response()
     }
-    ("POST", path) if path.starts_with("/v1/payment_links/") => {
-      Json(json!({"id":path.rsplit('/').next().unwrap_or_default()})).into_response()
+    ("GET", ["v1", "payments", id]) => {
+      let payment = match id.parse::<i64>() {
+        Ok(id) => provider.payments.lock().await.get(&id).cloned(),
+        Err(_) => None,
+      };
+      match payment {
+        Some(payment) => Json(payment).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+      }
+    }
+    ("POST", ["v1", "payments", id, "refunds"]) => {
+      if provider.refund_rejected.load(Ordering::SeqCst) {
+        return StatusCode::BAD_REQUEST.into_response();
+      }
+      let id: i64 = id.parse().unwrap();
+      if let Some(payment) = provider.payments.lock().await.get_mut(&id) {
+        payment["status"] = json!("refunded");
+      }
+      Json(json!({"id": 900_000 + id, "status": "approved"})).into_response()
     }
     _ => StatusCode::NOT_FOUND.into_response(),
   }
-}
-
-fn pairs(encoded: &str) -> HashMap<String, String> {
-  let url = reqwest::Url::parse(&format!("http://fixture.invalid/?{encoded}")).unwrap();
-  url
-    .query_pairs()
-    .map(|(key, value)| (key.into_owned(), value.into_owned()))
-    .collect()
 }
 
 pub(crate) struct Fixture {
@@ -150,11 +158,11 @@ impl Drop for Fixture {
 }
 
 impl Fixture {
-  pub async fn new(db: &Db, stripe_enabled: bool) -> Self {
+  pub async fn new(db: &Db, enabled: bool) -> Self {
     let (mut cfg, clock, old_app, totp) = tests::fixture(db).await;
     let session = tests::signed_in(&old_app, &totp, clock.now()).await;
     drop(old_app);
-    Self::with_session(db, &mut cfg, clock, session, stripe_enabled).await
+    Self::with_session(db, &mut cfg, clock, session, enabled).await
   }
 
   pub async fn with_session(
@@ -162,33 +170,33 @@ impl Fixture {
     cfg: &mut crate::common::config::Config,
     clock: Arc<TestClock>,
     session: String,
-    stripe_enabled: bool,
+    enabled: bool,
   ) -> Self {
     let provider = Arc::new(Provider::default());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let base = format!("http://{}", listener.local_addr().unwrap());
-    let stripe_router = Router::new().fallback(handle).with_state(provider.clone());
+    let base = format!("http://{}/", listener.local_addr().unwrap());
+    let router = Router::new().fallback(handle).with_state(provider.clone());
     let server = tokio::spawn(async move {
-      axum::serve(listener, stripe_router).await.unwrap();
+      axum::serve(listener, router).await.unwrap();
     });
-    let mut stripe_config = StripeConfig::parse(
-      Some("sk_test_synthetic_fixture"),
+    let mut config = MercadoPagoConfig::parse(
+      Some("APP_USR-synthetic-fixture"),
       cfg.public_origin.as_deref(),
     )
     .unwrap()
     .unwrap();
-    stripe_config.test_endpoint = Some(format!("{base}/v1/").parse().unwrap());
-    if stripe_enabled {
-      Arc::get_mut(cfg).unwrap().stripe = Some(stripe_config.clone());
+    config.test_endpoint = Some(base.parse().unwrap());
+    if enabled {
+      Arc::get_mut(cfg).unwrap().mercado_pago = Some(config.clone());
     }
-    let (app, _, google_client, client) = crate::app::compose_with_stripe(
+    let (app, _, google_client, client) = crate::app::compose_with_mercado_pago(
       cfg.clone(),
       db.clone(),
       clock.clone(),
-      stripe_enabled.then_some(stripe_config),
+      enabled.then_some(config),
     );
     let csrf = tests::field(
-      &tests::text(tests::authenticated_get(&app, "/settings/stripe", &session).await).await,
+      &tests::text(tests::authenticated_get(&app, "/settings/mercado-pago", &session).await).await,
       "csrf_token",
     );
     Self {
@@ -205,24 +213,24 @@ impl Fixture {
     }
   }
 
-  pub async fn post(&self, path: &str, origin: &str, csrf: &str) -> Response {
+  pub async fn post(&self, path: &str, csrf: &str) -> Response {
     tests::post(
       &self.app,
       path,
       Some(&self.session),
-      Some(origin),
+      Some("https://practice.test"),
       &[("csrf_token", csrf)],
     )
     .await
   }
 
-  pub async fn row(&self, db: &Db, appointment: Uuid) -> sea_orm::QueryResult {
+  pub async fn preference(&self, db: &Db, appointment: Uuid) -> sea_orm::QueryResult {
     let pool = reconnect(db, 2).await;
     let row = pool
       .conn
       .query_one(Statement::from_sql_and_values(
         DbBackend::Postgres,
-        "SELECT * FROM stripe_payment_links WHERE appointment_id=$1",
+        "SELECT * FROM mercado_pago_preferences WHERE appointment_id=$1",
         vec![appointment.into()],
       ))
       .await
@@ -232,12 +240,24 @@ impl Fixture {
     row
   }
 
+  pub async fn payment_row(&self, db: &Db, payment_id: i64) -> sea_orm::QueryResult {
+    db.conn
+      .query_one(sql(
+        "SELECT * FROM mercado_pago_payments WHERE payment_id=$1",
+        vec![payment_id.into()],
+      ))
+      .await
+      .unwrap()
+      .unwrap()
+  }
+
+  /// The token was already checked and accepted.
   pub async fn set_ready(&self, db: &Db) {
     let now = self.clock.now_millis();
     db.conn
       .execute(sql(
-        "INSERT INTO stripe_connection(id,account_id,charges_enabled,details_submitted,checked_at,created_at,updated_at) VALUES (1,$1,true,true,$2,$2,$2) ON CONFLICT (id) DO UPDATE SET account_id=EXCLUDED.account_id,charges_enabled=true,details_submitted=true,checked_at=EXCLUDED.checked_at,updated_at=EXCLUDED.updated_at",
-        vec![ACCOUNT_ID.to_owned().into(), now.into()],
+        "INSERT INTO mercado_pago_account(id,user_id,checked_at,notice,created_at,updated_at) VALUES (1,$1,$2,NULL,$2,$2) ON CONFLICT (id) DO UPDATE SET user_id=EXCLUDED.user_id,checked_at=EXCLUDED.checked_at,notice=NULL",
+        vec![USER_ID.into(), now.into()],
       ))
       .await
       .unwrap();
@@ -246,7 +266,7 @@ impl Fixture {
   pub async fn create_contact(&self, db: &Db) -> (Uuid, String) {
     let now = self.clock.now_millis();
     let contact = Uuid::now_v7();
-    let inbox_id = format!("stripe-test-{contact}");
+    let inbox_id = format!("mp-test-{contact}");
     let digits = format!("1555{:08}", contact.as_u128() % 100_000_000);
     let jid = format!("{digits}@c.us");
     db.conn
@@ -293,10 +313,10 @@ impl Fixture {
     let start =
       now + (self.appointments_created.fetch_add(1, Ordering::SeqCst) + 3) as i64 * 86_400_000;
     let amount_centavos = 125_500;
-    let reference = format!("STRIPE-{}", id.simple());
+    let reference = format!("MP-{}", id.simple());
     db.conn
       .execute(sql(
-        "INSERT INTO appointments(id,contact_id,patient_name,service_id,service_name,duration_minutes,price_centavos,format,starts_at,ends_at,timezone,location,buffer_before_minutes,buffer_after_minutes,status,payment,calendar_sync,bank,beneficiary,clabe,payment_reference,receipt_deadline,revision,created_at,updated_at) VALUES ($1,$2,'Paciente Stripe privado',$3,'Consulta general',45,$4,'video',$5,$6,'America/Mexico_City','Consultorio de prueba',0,0,$7,$8,'not_yet','Banco de prueba','Beneficiario de prueba','012345678901234567',$9,$10,1,$11,$11)",
+        "INSERT INTO appointments(id,contact_id,patient_name,service_id,service_name,duration_minutes,price_centavos,format,starts_at,ends_at,timezone,location,buffer_before_minutes,buffer_after_minutes,status,payment,calendar_sync,bank,beneficiary,clabe,payment_reference,receipt_deadline,revision,created_at,updated_at) VALUES ($1,$2,'Paciente MP privado',$3,'Consulta general',45,$4,'video',$5,$6,'America/Mexico_City','Consultorio de prueba',0,0,$7,$8,'not_yet','Banco de prueba','Beneficiario de prueba','012345678901234567',$9,$10,1,$11,$11)",
         vec![
           id.into(),
           contact.into(),
@@ -359,9 +379,9 @@ impl Fixture {
     tx.commit().await.unwrap();
   }
 
-  pub async fn schedule_link(&self, db: &Db, appointment: &VideoAppointment) {
+  pub async fn schedule_preference(&self, db: &Db, appointment: &VideoAppointment) {
     let tx = db.conn.begin().await.unwrap();
-    crate::modules::stripe::store::schedule_link(
+    store::schedule_preference(
       &tx,
       appointment.id,
       1,
@@ -374,28 +394,24 @@ impl Fixture {
     tx.commit().await.unwrap();
   }
 
-  pub async fn seed_active_link(
-    &self,
-    db: &Db,
-    appointment: &VideoAppointment,
-    link_id: &str,
-    deadline: i64,
-  ) {
+  pub async fn seed_active_preference(&self, db: &Db, appointment: &VideoAppointment) -> String {
+    let preference_id = format!("{USER_ID}-seed-{}", appointment.id.simple());
     db.conn
       .execute(sql(
-        "INSERT INTO stripe_payment_links(appointment_id,revision,account_id,price_id,link_id,url,amount_centavos,created_at,deactivate_at,outcome,next_check_at) VALUES ($1,1,$2,'price_seed',$3,$4,$5,$6,$7,'active',$6)",
+        "INSERT INTO mercado_pago_preferences(appointment_id,revision,external_reference,preference_id,url,amount_centavos,expires_at,outcome,next_check_at,created_at) VALUES ($1,1,$2,$3,$4,$5,$6,'active',$7,$7)",
         vec![
           appointment.id.into(),
-          ACCOUNT_ID.to_owned().into(),
-          link_id.to_owned().into(),
-          PAYMENT_URL.to_owned().into(),
+          store::external_reference(appointment.id, 1).into(),
+          preference_id.clone().into(),
+          CHECKOUT_URL.into(),
           appointment.amount_centavos.into(),
+          appointment.deadline.into(),
           self.clock.now_millis().into(),
-          deadline.into(),
         ],
       ))
       .await
       .unwrap();
+    preference_id
   }
 
   pub async fn add_expiry_job(&self, db: &Db, appointment: Uuid, due: i64) {
@@ -412,13 +428,34 @@ impl Fixture {
     tx.commit().await.unwrap();
   }
 
-  pub async fn set_sessions(&self, link_id: &str, sessions: Vec<Value>) {
+  /// Makes `payment` visible both to search (by its listed reference) and to `GET /v1/payments/{id}`.
+  pub async fn add_payment(&self, listed_under: &str, payment: Value) {
+    let id = payment["id"].as_i64().unwrap();
     self
       .provider
-      .sessions
+      .searches
       .lock()
       .await
-      .insert(link_id.to_owned(), sessions);
+      .entry(listed_under.to_owned())
+      .or_default()
+      .push(id);
+    self.provider.payments.lock().await.insert(id, payment);
+  }
+
+  pub async fn set_payment_status(&self, id: i64, status: &str) {
+    self.provider.payments.lock().await.get_mut(&id).unwrap()["status"] = json!(status);
+  }
+
+  pub async fn requests_to(&self, method: &str, path: &str) -> Vec<CapturedRequest> {
+    self
+      .provider
+      .requests
+      .lock()
+      .await
+      .iter()
+      .filter(|request| request.method == method && request.path == path)
+      .cloned()
+      .collect()
   }
 }
 
@@ -431,15 +468,27 @@ pub(crate) struct VideoAppointment {
   pub deadline: i64,
 }
 
-pub(crate) fn paid_session(id: &str, amount_total: i64, currency: &str) -> Value {
-  json!({
-    "id":id,
-    "status":"complete",
-    "payment_status":"paid",
-    "currency":currency,
-    "amount_total":amount_total
-  })
+impl VideoAppointment {
+  pub fn external_reference(&self) -> String {
+    store::external_reference(self.id, 1)
+  }
 }
 
-pub(crate) const ACCOUNT: &str = ACCOUNT_ID;
-pub(crate) const CHECKOUT_URL: &str = PAYMENT_URL;
+pub(crate) fn payment(
+  id: i64,
+  status: &str,
+  amount: Value,
+  currency: &str,
+  external_reference: &str,
+  collector: i64,
+) -> Value {
+  json!({
+    "id": id,
+    "status": status,
+    "status_detail": "accredited",
+    "currency_id": currency,
+    "transaction_amount": amount,
+    "external_reference": external_reference,
+    "collector_id": collector,
+  })
+}

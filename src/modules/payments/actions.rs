@@ -114,12 +114,7 @@ pub(crate) async fn confirm_appointment_payment(
   if released.rows_affected() == 0 {
     return Err(DbErr::Custom("Appointment Hold unavailable".into()));
   }
-  tx
-    .execute(sql(
-      "UPDATE stripe_payment_links SET next_check_at=$2 WHERE appointment_id=$1 AND deactivated_at IS NULL",
-      vec![appointment.id.into(), now.into()],
-    ))
-    .await?;
+  crate::modules::mercado_pago::store::recheck_preferences(tx, appointment.id, now).await?;
   appointment_store::history(tx, appointment.id, actor, history_kind, now).await?;
   appointment_store::job(
     tx,
@@ -293,11 +288,7 @@ pub async fn reject(
     if updated.rows_affected() != 1 {
       return Ok(ActionOutcome::Stale);
     }
-    tx
-      .execute(sql(
-        "UPDATE stripe_payment_links SET outcome=CASE WHEN outcome='active' THEN 'deactivating' ELSE outcome END,next_check_at=$2 WHERE appointment_id=$1 AND deactivated_at IS NULL",
-        vec![context.appointment.id.into(), now.into()],
-      ))
+    crate::modules::mercado_pago::store::recheck_preferences(tx, context.appointment.id, now)
       .await?;
     let held = tx
       .execute(sql(
@@ -346,7 +337,7 @@ pub async fn reject(
       now,
     )
     .await?;
-    crate::modules::stripe::store::schedule_link(
+    crate::modules::mercado_pago::store::schedule_preference(
       tx,
       context.appointment.id,
       revision,

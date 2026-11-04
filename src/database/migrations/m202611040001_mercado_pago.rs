@@ -7,13 +7,13 @@ impl MigrationTrait for Migration {
   async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
     manager
       .get_connection()
-      .execute_unprepared(include_str!("stripe_connect.sql"))
+      .execute_unprepared(include_str!("mercado_pago.sql"))
       .await?;
     Ok(())
   }
   async fn down(&self, _: &SchemaManager) -> Result<(), DbErr> {
     Err(DbErr::Custom(
-      "Stripe connection and payment evidence must be preserved".into(),
+      "Mercado Pago payment evidence must be preserved".into(),
     ))
   }
 }

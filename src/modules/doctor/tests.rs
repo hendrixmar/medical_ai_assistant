@@ -29,7 +29,7 @@ fn configuration() -> Config {
     doctor_totp_key: None,
     waha: None,
     google: None,
-    stripe: None,
+    mercado_pago: None,
     claude_api_key: None,
     claude_model: None,
     claude_test_endpoint: None,

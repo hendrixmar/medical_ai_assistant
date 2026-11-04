@@ -80,8 +80,8 @@ pub fn settings(view: SettingsView<'_>) -> String {
 {content}
 <section class="dashboard-section connections-note" aria-labelledby="connections-title">
 <h2 id="connections-title">Conexiones</h2>
-<ul><li><a class="text-link" href="/settings/knowledge">Respuestas aprobadas y perfil profesional</a></li><li><a class="text-link" href="/settings/whatsapp">Conexión de WhatsApp del consultorio</a></li><li><a class="text-link" href="/settings/doctor-number">Verificar tu número de WhatsApp</a></li><li><a class="text-link" href="/settings/google">Conexión de Google Calendar</a></li><li><a class="text-link" href="/settings/stripe">Conexión de Stripe</a></li></ul>
-<p class="muted">Guardar esta configuración no habilita las consultas por video ni crea citas. Las transferencias y sus comprobantes siguen disponibles aunque Stripe no esté configurado o conectado.</p>
+<ul><li><a class="text-link" href="/settings/knowledge">Respuestas aprobadas y perfil profesional</a></li><li><a class="text-link" href="/settings/whatsapp">Conexión de WhatsApp del consultorio</a></li><li><a class="text-link" href="/settings/doctor-number">Verificar tu número de WhatsApp</a></li><li><a class="text-link" href="/settings/google">Conexión de Google Calendar</a></li><li><a class="text-link" href="/settings/mercado-pago">Mercado Pago</a></li></ul>
+<p class="muted">Guardar esta configuración no habilita las consultas por video ni crea citas. Las transferencias y sus comprobantes siguen disponibles aunque Mercado Pago no esté configurado.</p>
 </section>
 <a class="text-link" href="/dashboard">Volver al panel</a>
 </main>"#,

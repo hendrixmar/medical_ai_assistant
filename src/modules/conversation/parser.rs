@@ -1402,7 +1402,7 @@ mod tests {
       waha_takeover_enabled: false,
       waha: None,
       google: None,
-      stripe: None,
+      mercado_pago: None,
     })
   }
 
@@ -1430,7 +1430,7 @@ mod tests {
       waha_takeover_enabled: false,
       waha: None,
       google: None,
-      stripe: None,
+      mercado_pago: None,
     })
   }
 

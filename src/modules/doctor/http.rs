@@ -28,7 +28,7 @@ pub fn router(state: AppState) -> Router<AppState> {
     .merge(crate::modules::whatsapp::dashboard_router())
     .merge(crate::modules::doctor_number::router())
     .merge(crate::modules::google_calendar::router())
-    .merge(crate::modules::stripe::router())
+    .merge(crate::modules::mercado_pago::router())
     .route("/logout", post(logout))
     .route_layer(middleware::from_fn_with_state(state, authorize));
   Router::new()
@@ -54,9 +54,7 @@ fn return_to(value: &str) -> &str {
     "/settings" => "/settings",
     "/settings/knowledge" => "/settings/knowledge",
     "/settings/google" => "/settings/google",
-    "/settings/stripe" | "/settings/stripe/return" | "/settings/stripe/refresh" => {
-      "/settings/stripe"
-    }
+    "/settings/mercado-pago" => "/settings/mercado-pago",
     "/settings/whatsapp" => "/settings/whatsapp",
     "/settings/doctor-number" => "/settings/doctor-number",
     "/appointments" => "/appointments",
@@ -295,12 +293,10 @@ async fn logout(State(state): State<AppState>, Extension(session): Extension<Ses
 }
 
 async fn security_headers(request: Request<Body>, next: Next) -> Response {
-  // Browsers enforce the initiating document's form-action on Connect redirects too.
+  // Browsers enforce the initiating document's form-action on OAuth redirects too.
   let form_action = if request.method() == Method::GET && request.uri().path() == "/settings/google"
   {
     "'self' https://accounts.google.com"
-  } else if request.method() == Method::GET && request.uri().path() == "/settings/stripe" {
-    "'self' https://connect.stripe.com"
   } else {
     "'self'"
   };

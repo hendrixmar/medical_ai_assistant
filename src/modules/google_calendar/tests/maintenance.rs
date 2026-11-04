@@ -72,7 +72,7 @@ fn google_cfg_with_key(
     doctor_totp_key: Some([42; 32]),
     waha: None,
     google: Some(google),
-    stripe: None,
+    mercado_pago: None,
     claude_api_key: None,
     claude_model: None,
     claude_test_endpoint: None,

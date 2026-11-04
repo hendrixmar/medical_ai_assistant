@@ -45,7 +45,7 @@ pub struct Preflight {
   target: Target,
   practice_snapshot: String,
   service_snapshot: Option<ServiceSnapshot>,
-  stripe_configured: bool,
+  mercado_pago_configured: bool,
 }
 
 pub enum Commit {
@@ -214,7 +214,7 @@ pub async fn prepare_selection(
     target,
     practice_snapshot,
     service_snapshot,
-    stripe_configured: cfg.stripe.is_some(),
+    mercado_pago_configured: cfg.mercado_pago.is_some(),
   }))
 }
 
@@ -544,8 +544,8 @@ pub async fn commit_selection_for_actor(
         )
         .await?;
       }
-      if preflight.stripe_configured {
-        crate::modules::stripe::store::schedule_link(
+      if preflight.mercado_pago_configured {
+        crate::modules::mercado_pago::store::schedule_preference(
           &work,
           id,
           revision,

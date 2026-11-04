@@ -404,6 +404,8 @@ pub(super) struct DetailView {
   pub can_cancel: bool,
   pub can_reschedule: bool,
   pub can_resolve_refund: bool,
+  /// Mercado Pago payment ids the Doctor may refund through the API.
+  pub mercado_pago_refunds: Vec<String>,
   pub receipts: Vec<ReceiptLink>,
   pub history: Vec<HistoryEntry>,
 }
@@ -463,6 +465,19 @@ pub(super) fn appointment_detail(csrf_token: &str, view: &DetailView) -> String 
 </form>"#,
       escape(&view.id),
       escape(csrf_token)
+    ));
+  }
+  for payment in &view.mercado_pago_refunds {
+    actions.push_str(&format!(
+      r#"<form method="post" action="/appointments/{}/mercado-pago/{}/refund">
+<input type="hidden" name="csrf_token" value="{}">
+<p>Pago de Mercado Pago {}: el reembolso total se solicita a Mercado Pago y no cambia el pago verificado.</p>
+<button class="primary-button" type="submit">Reembolsar con Mercado Pago</button>
+</form>"#,
+      escape(&view.id),
+      escape(payment),
+      escape(csrf_token),
+      escape(payment)
     ));
   }
   if view.can_resolve_refund {

@@ -474,11 +474,7 @@ async fn process_expiry(
   if updated.rows_affected() != 1 {
     return Err(DbErr::Custom("Appointment expiry state changed".into()));
   }
-  tx.execute(sql(
-    "UPDATE stripe_payment_links SET next_check_at=$2 WHERE appointment_id=$1 AND deactivated_at IS NULL",
-    vec![claim.appointment_id.into(), now.into()],
-  ))
-  .await?;
+  crate::modules::mercado_pago::store::recheck_preferences(tx, claim.appointment_id, now).await?;
   tx.execute(sql(
     "UPDATE appointment_holds SET active=false WHERE appointment_id=$1 AND active",
     vec![claim.appointment_id.into()],

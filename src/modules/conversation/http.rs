@@ -82,8 +82,11 @@ fn attention_kind(kind: &str) -> AttentionKind {
     "receipt_selection" => AttentionKind::ReceiptSelection,
     "receipt_clarification" => AttentionKind::ReceiptClarification,
     "refund_due" => AttentionKind::RefundDue,
-    "stripe_payment_late" => AttentionKind::StripePaymentLate,
-    "stripe_payment_duplicate" => AttentionKind::StripePaymentDuplicate,
+    "online_payment_late" => AttentionKind::OnlinePaymentLate,
+    "online_payment_duplicate" => AttentionKind::OnlinePaymentDuplicate,
+    "online_payment_mismatch" => AttentionKind::OnlinePaymentMismatch,
+    "online_payment_reversed" => AttentionKind::OnlinePaymentReversed,
+    "mercado_pago_unauthorized" => AttentionKind::MercadoPagoUnauthorized,
     "calendar_conflict" => AttentionKind::CalendarConflict,
     "calendar_sync_failed" => AttentionKind::CalendarSyncFailed,
     "calendar_availability_unavailable" => AttentionKind::CalendarAvailabilityUnavailable,
@@ -152,7 +155,7 @@ async fn load(state: &AppState, page: u32) -> Result<Attention, DbErr> {
         UNION ALL
         SELECT ai.id,ai.contact_id,ai.created_at,
           CASE WHEN ai.kind IN ('receipt_review','late_receipt','receipt_selection','receipt_clarification','receipt_copy_failed') THEN 0
-          WHEN ai.kind IN ('refund_due','stripe_payment_late','stripe_payment_duplicate','calendar_conflict','calendar_sync_failed','calendar_check_unavailable','google_reauthorization_required','whatsapp_disconnected','whatsapp_recovery_incomplete','whatsapp_identity_missing') THEN 1 ELSE 2 END,
+          WHEN ai.kind IN ('refund_due','online_payment_late','online_payment_duplicate','online_payment_mismatch','online_payment_reversed','mercado_pago_unauthorized','calendar_conflict','calendar_sync_failed','calendar_check_unavailable','google_reauthorization_required','whatsapp_disconnected','whatsapp_recovery_incomplete','whatsapp_identity_missing') THEN 1 ELSE 2 END,
           ai.kind,ai.appointment_id,ai.dedupe_key
         FROM attention_items ai
         WHERE ai.resolved_at IS NULL AND ai.kind<>'receipt_followup'

@@ -14,7 +14,7 @@ pub struct AppState {
   pub clock: std::sync::Arc<dyn modules::doctor::Clock>,
   pub waha: Option<modules::whatsapp::client::Client>,
   pub google: Option<modules::google_calendar::client::Client>,
-  pub stripe: Option<modules::stripe::client::Client>,
+  pub mercado_pago: Option<modules::mercado_pago::client::Client>,
 }
 
 pub fn router(cfg: Config, db: Db) -> Router {
@@ -39,21 +39,22 @@ pub fn compose(
   Option<modules::whatsapp::client::Client>,
   Option<modules::google_calendar::client::Client>,
 ) {
-  let (router, waha, google, _) = compose_with_stripe(cfg.clone(), db, clock, cfg.stripe.clone());
+  let (router, waha, google, _) =
+    compose_with_mercado_pago(cfg.clone(), db, clock, cfg.mercado_pago.clone());
   (router, waha, google)
 }
 
 /// Router and process workers share provider clients. Construction starts no tasks.
-pub fn compose_with_stripe(
+pub fn compose_with_mercado_pago(
   cfg: Config,
   db: Db,
   clock: std::sync::Arc<dyn modules::doctor::Clock>,
-  stripe_config: Option<modules::stripe::config::StripeConfig>,
+  mercado_pago_config: Option<modules::mercado_pago::config::MercadoPagoConfig>,
 ) -> (
   Router,
   Option<modules::whatsapp::client::Client>,
   Option<modules::google_calendar::client::Client>,
-  Option<modules::stripe::client::Client>,
+  Option<modules::mercado_pago::client::Client>,
 ) {
   let waha = cfg.waha.as_ref().map(|config| {
     modules::whatsapp::client::Client::new(config).unwrap_or_else(|message| panic!("{message}"))
@@ -62,8 +63,8 @@ pub fn compose_with_stripe(
     modules::google_calendar::client::Client::new(config)
       .unwrap_or_else(|message| panic!("{message}"))
   });
-  let stripe = stripe_config.as_ref().map(|config| {
-    modules::stripe::client::Client::new(config).unwrap_or_else(|message| panic!("{message}"))
+  let mercado_pago = mercado_pago_config.as_ref().map(|config| {
+    modules::mercado_pago::client::Client::new(config).unwrap_or_else(|message| panic!("{message}"))
   });
   let app_state = AppState {
     db,
@@ -71,7 +72,7 @@ pub fn compose_with_stripe(
     clock,
     waha: waha.clone(),
     google: google.clone(),
-    stripe: stripe.clone(),
+    mercado_pago: mercado_pago.clone(),
   };
 
   // Middleware that adds high level tracing to a Service.
@@ -124,7 +125,7 @@ pub fn compose_with_stripe(
     .layer(request_id_layer)
     .layer(axum::middleware::from_fn(callback_envelope))
     .with_state(app_state);
-  (router, waha, google, stripe)
+  (router, waha, google, mercado_pago)
 }
 
 // Outside authentication, route rejections, security headers AND the global timeout.

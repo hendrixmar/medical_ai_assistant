@@ -67,7 +67,7 @@ pub struct Configuration {
   #[serde(skip)]
   pub google: Option<crate::modules::google_calendar::config::GoogleConfig>,
   #[serde(skip)]
-  pub stripe: Option<crate::modules::stripe::config::StripeConfig>,
+  pub mercado_pago: Option<crate::modules::mercado_pago::config::MercadoPagoConfig>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -141,13 +141,13 @@ impl Configuration {
       public_origin.as_deref(),
     )
     .unwrap_or_else(|message| panic!("{message}"));
-    let stripe_secret_key = match std::env::var("STRIPE_SECRET_KEY") {
+    let mercado_pago_access_token = match std::env::var("MERCADO_PAGO_ACCESS_TOKEN") {
       Ok(value) => Some(value),
       Err(std::env::VarError::NotPresent) => None,
       Err(std::env::VarError::NotUnicode(_)) => Some(String::new()),
     };
-    let stripe = crate::modules::stripe::config::StripeConfig::parse(
-      stripe_secret_key.as_deref(),
+    let mercado_pago = crate::modules::mercado_pago::config::MercadoPagoConfig::parse(
+      mercado_pago_access_token.as_deref(),
       public_origin.as_deref(),
     )
     .unwrap_or_else(|message| panic!("{message}"));
@@ -219,7 +219,7 @@ impl Configuration {
       waha_contact_replies_per_hour,
       waha,
       google,
-      stripe,
+      mercado_pago,
     });
 
     info!(
