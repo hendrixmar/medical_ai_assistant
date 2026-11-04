@@ -1,6 +1,12 @@
 use super::{
-  booking, store,
-  views::{self, DetailView, HistoryEntry, ListItem, ListView, Period, ReceiptLink},
+  booking::{self, Commit, Prepared, SelectionRequest},
+  model::Format,
+  store,
+  views::{
+    self, CalendarDayGroup, CalendarMode, CalendarSlotItem, CalendarView, ContactOption,
+    CreateFormView, DetailView, HistoryEntry, ListItem, ListView, Period, ReceiptLink,
+    ServiceOption,
+  },
 };
 use crate::{
   app::AppState,
@@ -14,9 +20,9 @@ use axum::{
   http::StatusCode,
   response::{Html, IntoResponse, Redirect, Response},
   routing::{get, post},
-  Extension, Router,
+  Extension, Form, Router,
 };
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Datelike, NaiveDate, NaiveTime, TimeZone, Utc};
 use sea_orm::{ConnectionTrait, DbErr, TransactionTrait};
 use serde::Deserialize;
 use uuid::Uuid;
@@ -26,6 +32,7 @@ const PAGE_SIZE: i64 = 25;
 pub fn protected_router() -> Router<AppState> {
   Router::new()
     .route("/appointments", get(list))
+    .route("/appointments/create", post(create))
     .route("/appointments/{id}", get(detail))
     .route("/appointments/{id}/cancel", post(cancel))
     .route("/appointments/{id}/reschedule", post(request_reschedule))
@@ -35,14 +42,39 @@ pub fn protected_router() -> Router<AppState> {
 #[derive(Default, Deserialize)]
 struct ListQuery {
   period: Option<String>,
+  view: Option<String>,
+  date: Option<String>,
   #[serde(default)]
   page: u32,
+}
+
+#[derive(Deserialize)]
+struct CreateForm {
+  patient_name: String,
+  #[serde(default)]
+  contact_id: String,
+  #[serde(default)]
+  contact_phone: String,
+  service_id: String,
+  format: String,
+  date: String,
+  time: String,
 }
 
 fn period(value: Option<&str>) -> Option<Period> {
   match value.unwrap_or("upcoming") {
     "upcoming" => Some(Period::Upcoming),
     "past" => Some(Period::Past),
+    _ => None,
+  }
+}
+
+fn calendar_mode(value: Option<&str>) -> Option<Option<CalendarMode>> {
+  match value {
+    None | Some("list") => Some(None),
+    Some("day") => Some(Some(CalendarMode::Day)),
+    Some("week") => Some(Some(CalendarMode::Week)),
+    Some("month") => Some(Some(CalendarMode::Month)),
     _ => None,
   }
 }
@@ -142,12 +174,31 @@ async fn list(
   Extension(session): Extension<DoctorSession>,
   Query(query): Query<ListQuery>,
 ) -> Response {
+  let Some(mode) = calendar_mode(query.view.as_deref()) else {
+    return StatusCode::BAD_REQUEST.into_response();
+  };
+  if let Some(mode) = mode {
+    return render_calendar(&state, &session, mode, query.date.as_deref(), None).await;
+  }
   let Some(period) = period(query.period.as_deref()) else {
     return StatusCode::BAD_REQUEST.into_response();
   };
   let result = load_list(&state, period, query.page, state.clock.now_millis()).await;
   let load_error = result.is_err();
   let (items, next) = result.unwrap_or_default();
+  let form_data = if load_error {
+    None
+  } else {
+    load_create_options(&state).await.ok()
+  };
+  let create_form = form_data
+    .as_ref()
+    .map(|(services, contacts, timezone)| CreateFormView {
+      services,
+      contacts,
+      timezone: timezone.as_deref(),
+      error: None,
+    });
   (
     if load_error {
       StatusCode::SERVICE_UNAVAILABLE
@@ -162,9 +213,468 @@ async fn list(
       previous_page: query.page.checked_sub(1),
       next_page: next.then(|| query.page.saturating_add(1)),
       load_error,
+      create_form,
     })),
   )
     .into_response()
+}
+
+async fn load_create_options(
+  state: &AppState,
+) -> Result<(Vec<ServiceOption>, Vec<ContactOption>, Option<String>), DbErr> {
+  let practice = crate::modules::practice::store::load(&state.db).await?;
+  let services = crate::modules::practice::store::services(&state.db).await?;
+  let service_options = services
+    .into_iter()
+    .map(|svc| ServiceOption {
+      id: svc.id.to_string(),
+      label: format!(
+        "{} — {} minutos — ${} MXN",
+        svc.name,
+        svc.duration_minutes,
+        svc.price_mxn()
+      ),
+    })
+    .collect();
+  let contact_rows = state
+    .db
+    .conn
+    .query_all(sql(
+      "SELECT c.id,COALESCE((SELECT a.jid FROM contact_aliases a WHERE a.contact_id=c.id ORDER BY a.jid LIMIT 1),c.id::text) AS label FROM contacts c ORDER BY c.created_at DESC,c.id DESC LIMIT 100",
+      vec![],
+    ))
+    .await?;
+  let mut contacts = Vec::with_capacity(contact_rows.len());
+  for row in contact_rows {
+    let id: Uuid = row.try_get("", "id")?;
+    let label: String = row.try_get("", "label")?;
+    contacts.push(ContactOption {
+      id: id.to_string(),
+      label,
+    });
+  }
+  Ok((service_options, contacts, practice.timezone))
+}
+
+fn local_day_start_millis(date: NaiveDate, tz: chrono_tz::Tz) -> i64 {
+  let midnight = date.and_time(NaiveTime::MIN);
+  for minute in 0..24 * 60 {
+    if let Some(local) = midnight.checked_add_signed(chrono::Duration::minutes(minute)) {
+      match tz.from_local_datetime(&local) {
+        chrono::LocalResult::Single(value) if value.date_naive() == date => {
+          return value.timestamp_millis();
+        }
+        chrono::LocalResult::Ambiguous(first, second)
+          if first.date_naive() == date && second.date_naive() == date =>
+        {
+          return first.timestamp_millis().min(second.timestamp_millis());
+        }
+        _ => {}
+      }
+    }
+  }
+  date
+    .and_hms_opt(0, 0, 0)
+    .unwrap()
+    .and_utc()
+    .timestamp_millis()
+}
+
+async fn render_calendar(
+  state: &AppState,
+  session: &DoctorSession,
+  mode: CalendarMode,
+  date_param: Option<&str>,
+  error: Option<&str>,
+) -> Response {
+  let Ok((services, contacts, configured_tz)) = load_create_options(state).await else {
+    return (
+      StatusCode::SERVICE_UNAVAILABLE,
+      Html(views::load_error(&session.csrf, None)),
+    )
+      .into_response();
+  };
+  let tz_name = configured_tz.as_deref().unwrap_or("UTC");
+  let tz = tz_name.parse::<chrono_tz::Tz>().unwrap_or(chrono_tz::UTC);
+  let default_date = DateTime::<Utc>::from_timestamp_millis(state.clock.now_millis())
+    .map(|dt| dt.with_timezone(&tz).date_naive())
+    .unwrap_or_else(|| NaiveDate::from_ymd_opt(2027, 1, 15).unwrap());
+  let anchor = match date_param {
+    Some(raw) => {
+      let Ok(parsed) = NaiveDate::parse_from_str(raw, "%Y-%m-%d") else {
+        return StatusCode::BAD_REQUEST.into_response();
+      };
+      parsed
+    }
+    None => default_date,
+  };
+  let (start_date, end_date, prev_date, next_date, range_label) = match mode {
+    CalendarMode::Day => (
+      anchor,
+      anchor,
+      anchor - chrono::Duration::days(1),
+      anchor + chrono::Duration::days(1),
+      anchor.format("%Y-%m-%d").to_string(),
+    ),
+    CalendarMode::Week => {
+      let offset = i64::from(anchor.weekday().num_days_from_monday());
+      let monday = anchor - chrono::Duration::days(offset);
+      let sunday = monday + chrono::Duration::days(6);
+      (
+        monday,
+        sunday,
+        monday - chrono::Duration::days(7),
+        monday + chrono::Duration::days(7),
+        format!(
+          "{} a {}",
+          monday.format("%Y-%m-%d"),
+          sunday.format("%Y-%m-%d")
+        ),
+      )
+    }
+    CalendarMode::Month => {
+      let first = NaiveDate::from_ymd_opt(anchor.year(), anchor.month(), 1).unwrap_or(anchor);
+      let next_month = if anchor.month() == 12 {
+        NaiveDate::from_ymd_opt(anchor.year() + 1, 1, 1).unwrap_or(anchor)
+      } else {
+        NaiveDate::from_ymd_opt(anchor.year(), anchor.month() + 1, 1).unwrap_or(anchor)
+      };
+      let last = next_month - chrono::Duration::days(1);
+      let prev_month = if anchor.month() == 1 {
+        NaiveDate::from_ymd_opt(anchor.year() - 1, 1, 1).unwrap_or(anchor)
+      } else {
+        NaiveDate::from_ymd_opt(anchor.year(), anchor.month() - 1, 1).unwrap_or(anchor)
+      };
+      (
+        first,
+        last,
+        prev_month,
+        next_month,
+        first.format("%Y-%m").to_string(),
+      )
+    }
+  };
+  let window_start = local_day_start_millis(start_date, tz);
+  let window_end = local_day_start_millis(end_date + chrono::Duration::days(1), tz);
+  let Ok(rows) = state
+    .db
+    .conn
+    .query_all(sql(
+      "SELECT a.id,a.patient_name,a.service_name,a.format,a.starts_at,a.ends_at,a.status,EXISTS(SELECT 1 FROM appointment_holds h WHERE h.appointment_id=a.id AND h.active) AS hold_active FROM appointments a WHERE a.starts_at < $2 AND a.ends_at > $1 ORDER BY a.starts_at,a.id",
+      vec![window_start.into(), window_end.into()],
+    ))
+    .await
+  else {
+    return (
+      StatusCode::SERVICE_UNAVAILABLE,
+      Html(views::load_error(&session.csrf, None)),
+    )
+      .into_response();
+  };
+  let mut days = Vec::new();
+  let mut cursor = start_date;
+  while cursor <= end_date {
+    let mut day_items = Vec::new();
+    for row in &rows {
+      let starts_at: i64 = row.try_get("", "starts_at").unwrap_or_default();
+      let ends_at: i64 = row.try_get("", "ends_at").unwrap_or_default();
+      let Some(start_local) =
+        DateTime::<Utc>::from_timestamp_millis(starts_at).map(|dt| dt.with_timezone(&tz))
+      else {
+        continue;
+      };
+      if start_local.date_naive() != cursor {
+        continue;
+      }
+      let end_str = DateTime::<Utc>::from_timestamp_millis(ends_at)
+        .map(|dt| dt.with_timezone(&tz).format("%H:%M").to_string())
+        .unwrap_or_default();
+      let id: Uuid = row.try_get("", "id").unwrap_or_default();
+      let format_code: String = row.try_get("", "format").unwrap_or_default();
+      let status_code: String = row.try_get("", "status").unwrap_or_default();
+      day_items.push(CalendarSlotItem {
+        id: id.to_string(),
+        patient_name: row.try_get("", "patient_name").unwrap_or_default(),
+        service_name: row.try_get("", "service_name").unwrap_or_default(),
+        format: appointment_format(&format_code).to_owned(),
+        time_range: format!("{}-{}", start_local.format("%H:%M"), end_str),
+        status: appointment_status(&status_code).to_owned(),
+        hold_active: row.try_get("", "hold_active").unwrap_or(false),
+      });
+    }
+    days.push(CalendarDayGroup {
+      date_label: cursor.format("%Y-%m-%d").to_string(),
+      items: day_items,
+    });
+    cursor += chrono::Duration::days(1);
+  }
+  let status = if error.is_some() {
+    StatusCode::UNPROCESSABLE_ENTITY
+  } else {
+    StatusCode::OK
+  };
+  (
+    status,
+    Html(views::appointment_calendar(CalendarView {
+      csrf_token: &session.csrf,
+      mode,
+      anchor_date: &anchor.format("%Y-%m-%d").to_string(),
+      prev_date: &prev_date.format("%Y-%m-%d").to_string(),
+      next_date: &next_date.format("%Y-%m-%d").to_string(),
+      range_label: &range_label,
+      timezone: tz_name,
+      days: &days,
+      create_form: CreateFormView {
+        services: &services,
+        contacts: &contacts,
+        timezone: configured_tz.as_deref(),
+        error,
+      },
+    })),
+  )
+    .into_response()
+}
+
+async fn create(
+  State(state): State<AppState>,
+  Extension(session): Extension<DoctorSession>,
+  Form(form): Form<CreateForm>,
+) -> Response {
+  let Some(origin) = state.cfg.public_origin.as_deref() else {
+    return StatusCode::SERVICE_UNAVAILABLE.into_response();
+  };
+  if !booking::valid_patient(Some(&form.patient_name)) {
+    return render_calendar(
+      &state,
+      &session,
+      CalendarMode::Day,
+      None,
+      Some("Escriba un nombre de paciente válido de hasta 120 caracteres."),
+    )
+    .await;
+  }
+  let Ok(service_id) = Uuid::parse_str(form.service_id.trim()) else {
+    return render_calendar(
+      &state,
+      &session,
+      CalendarMode::Day,
+      None,
+      Some("Elija un servicio válido del consultorio."),
+    )
+    .await;
+  };
+  let Some(format) = Format::from_db(form.format.trim()) else {
+    return render_calendar(
+      &state,
+      &session,
+      CalendarMode::Day,
+      None,
+      Some("Elija un formato válido (presencial o videollamada)."),
+    )
+    .await;
+  };
+  let Ok(practice) = crate::modules::practice::store::load(&state.db).await else {
+    return StatusCode::SERVICE_UNAVAILABLE.into_response();
+  };
+  let Some(tz) = practice
+    .timezone
+    .as_deref()
+    .and_then(|name| name.parse::<chrono_tz::Tz>().ok())
+  else {
+    return render_calendar(
+      &state,
+      &session,
+      CalendarMode::Day,
+      None,
+      Some("Configure primero la zona horaria del consultorio."),
+    )
+    .await;
+  };
+  let Ok(date) = NaiveDate::parse_from_str(form.date.trim(), "%Y-%m-%d") else {
+    return render_calendar(
+      &state,
+      &session,
+      CalendarMode::Day,
+      None,
+      Some("Indique la fecha en formato AAAA-MM-DD."),
+    )
+    .await;
+  };
+  let Ok(time) = NaiveTime::parse_from_str(form.time.trim(), "%H:%M") else {
+    return render_calendar(
+      &state,
+      &session,
+      CalendarMode::Day,
+      Some(form.date.trim()),
+      Some("Indique la hora en formato HH:MM."),
+    )
+    .await;
+  };
+  let Some(local_dt) = tz.from_local_datetime(&date.and_time(time)).earliest() else {
+    return render_calendar(
+      &state,
+      &session,
+      CalendarMode::Day,
+      Some(form.date.trim()),
+      Some("La hora indicada no es válida en la zona horaria del consultorio."),
+    )
+    .await;
+  };
+  let starts_at = local_dt.timestamp_millis();
+  let now = state.clock.now_millis();
+  let contact = match resolve_or_create_contact(
+    &state,
+    form.contact_id.trim(),
+    form.contact_phone.trim(),
+    now,
+  )
+  .await
+  {
+    Ok(Some(id)) => id,
+    Ok(None) => {
+      return render_calendar(
+        &state,
+        &session,
+        CalendarMode::Day,
+        Some(form.date.trim()),
+        Some("Seleccione un contacto existente o indique un teléfono de WhatsApp válido (solo dígitos)."),
+      )
+      .await;
+    }
+    Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+  };
+  let prepared = match booking::prepare_selection(
+    &state.db,
+    state.clock.as_ref(),
+    &state.cfg,
+    state.google.as_ref(),
+    SelectionRequest {
+      contact,
+      service_id,
+      format,
+      starts_at,
+      appointment_id: None,
+      expected_revision: None,
+      late_recovery: false,
+    },
+    Some(&form.patient_name),
+  )
+  .await
+  {
+    Ok(prepared) => prepared,
+    Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+  };
+  let Prepared::Ready(preflight) = prepared else {
+    return render_calendar(
+      &state,
+      &session,
+      CalendarMode::Day,
+      Some(form.date.trim()),
+      Some("El horario no está disponible según las reglas del consultorio, las retenciones activas o Google Calendar."),
+    )
+    .await;
+  };
+  let Ok(tx) = state.db.conn.begin().await else {
+    return StatusCode::SERVICE_UNAVAILABLE.into_response();
+  };
+  if whatsapp::bound_transaction(&tx).await.is_err() {
+    let _ = tx.rollback().await;
+    return StatusCode::SERVICE_UNAVAILABLE.into_response();
+  }
+  match booking::commit_selection_for_actor(
+    &tx,
+    preflight,
+    None,
+    "Doctor",
+    Some(&form.patient_name),
+    origin,
+    now,
+  )
+  .await
+  {
+    Ok(Commit::Applied { appointment_id, .. }) => {
+      if tx.commit().await.is_err() {
+        StatusCode::SERVICE_UNAVAILABLE.into_response()
+      } else {
+        Redirect::to(&format!("/appointments/{appointment_id}")).into_response()
+      }
+    }
+    Ok(Commit::OpenLimit) => {
+      let _ = tx.rollback().await;
+      render_calendar(
+        &state,
+        &session,
+        CalendarMode::Day,
+        Some(form.date.trim()),
+        Some("El contacto ya tiene tres citas abiertas."),
+      )
+      .await
+    }
+    Ok(Commit::Stale | Commit::Followup) => {
+      let _ = tx.rollback().await;
+      render_calendar(
+        &state,
+        &session,
+        CalendarMode::Day,
+        Some(form.date.trim()),
+        Some("El horario cambió o ya fue ocupado; no se creó la cita."),
+      )
+      .await
+    }
+    Err(_) => {
+      let _ = tx.rollback().await;
+      StatusCode::SERVICE_UNAVAILABLE.into_response()
+    }
+  }
+}
+
+async fn resolve_or_create_contact(
+  state: &AppState,
+  contact_id: &str,
+  contact_phone: &str,
+  now: i64,
+) -> Result<Option<Uuid>, DbErr> {
+  if !contact_id.is_empty() {
+    let Ok(id) = Uuid::parse_str(contact_id) else {
+      return Ok(None);
+    };
+    let exists = state
+      .db
+      .conn
+      .query_one(sql("SELECT id FROM contacts WHERE id=$1", vec![id.into()]))
+      .await?
+      .is_some();
+    return Ok(exists.then_some(id));
+  }
+  let digits: String = contact_phone
+    .chars()
+    .filter(|ch| ch.is_ascii_digit())
+    .collect();
+  if !(8..=20).contains(&digits.len()) {
+    return Ok(None);
+  }
+  let jid = format!("{digits}@c.us");
+  if let Some(row) = state
+    .db
+    .conn
+    .query_one(sql(
+      "SELECT contact_id FROM contact_aliases WHERE jid=$1",
+      vec![jid.into()],
+    ))
+    .await?
+  {
+    return Ok(Some(row.try_get("", "contact_id")?));
+  }
+  let id = Uuid::now_v7();
+  state
+    .db
+    .conn
+    .execute(sql(
+      "INSERT INTO contacts(id,created_at) VALUES ($1,$2)",
+      vec![id.into(), now.into()],
+    ))
+    .await?;
+  Ok(Some(id))
 }
 
 async fn load_detail(
@@ -242,6 +752,15 @@ async fn load_detail(
       "SELECT EXISTS(SELECT FROM attention_items WHERE appointment_id=$1 AND kind='refund_due' AND resolved_at IS NULL) AS pending",
       vec![appointment_id.into()],
     )).await?.ok_or_else(|| DbErr::Custom("Refund state unavailable".into()))?.try_get::<bool>("", "pending")?;
+  let mercado_pago_refunds = if state.mercado_pago.is_some() {
+    crate::modules::mercado_pago::store::refundable_payments(&state.db.conn, appointment_id)
+      .await?
+      .into_iter()
+      .map(|payment| payment.to_string())
+      .collect()
+  } else {
+    Vec::new()
+  };
   Ok(Some(DetailView {
     id: appointment.id.to_string(),
     contact_id: appointment.contact_id.to_string(),
@@ -268,6 +787,7 @@ async fn load_detail(
     can_cancel: active_upcoming,
     can_reschedule: active_upcoming,
     can_resolve_refund,
+    mercado_pago_refunds,
     receipts,
     history,
   }))
@@ -319,6 +839,14 @@ fn history_action(kind: &str) -> &'static str {
     "late_receipt_verified_refund" => "Se requiere gestionar el reembolso del pago tardío",
     "late_receipt_clarification_requested" => "Se solicitó aclarar el comprobante tardío",
     "refund_resolved" => "Reembolso registrado como resuelto por el doctor",
+    "payment_verified_mercado_pago" => "Pago confirmado con Mercado Pago",
+    "mercado_pago_payment_late" => "Pago tardío recibido en Mercado Pago",
+    "mercado_pago_payment_duplicate" => "Pago duplicado recibido en Mercado Pago",
+    "mercado_pago_payment_mismatch" => "Pago de Mercado Pago que no coincide con la cita",
+    "mercado_pago_payment_reversed" => "Mercado Pago reporta reembolso o contracargo externo",
+    "mercado_pago_refund_requested" => "El doctor solicitó reembolsar con Mercado Pago",
+    "mercado_pago_refunded" => "Reembolso emitido por Mercado Pago",
+    "mercado_pago_refund_failed" => "Mercado Pago rechazó el reembolso",
     _ => "Cambio registrado",
   }
 }

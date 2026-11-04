@@ -28,6 +28,7 @@ pub fn router(state: AppState) -> Router<AppState> {
     .merge(crate::modules::whatsapp::dashboard_router())
     .merge(crate::modules::doctor_number::router())
     .merge(crate::modules::google_calendar::router())
+    .merge(crate::modules::mercado_pago::router())
     .route("/logout", post(logout))
     .route_layer(middleware::from_fn_with_state(state, authorize));
   Router::new()
@@ -51,9 +52,11 @@ fn enabled(state: &AppState) -> bool {
 fn return_to(value: &str) -> &str {
   match value {
     "/settings" => "/settings",
+    "/settings/knowledge" => "/settings/knowledge",
+    "/settings/google" => "/settings/google",
+    "/settings/mercado-pago" => "/settings/mercado-pago",
     "/settings/whatsapp" => "/settings/whatsapp",
     "/settings/doctor-number" => "/settings/doctor-number",
-    "/settings/google" => "/settings/google",
     "/appointments" => "/appointments",
     "/contacts" => "/contacts",
     path

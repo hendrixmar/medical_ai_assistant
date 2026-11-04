@@ -51,7 +51,7 @@ An Appointment that is not cancelled, expired or past. A Contact may have only a
 _Avoid_: active booking
 
 **Expired Appointment**:
-A video Appointment whose Hold lapsed because no timely Receipt arrived.
+A video Appointment whose Hold lapsed before Payment Verification.
 _Avoid_: cancelled (cancellation is always someone's decision)
 
 **Reschedule** (UI: *cambiar cita*):
@@ -92,6 +92,9 @@ _Avoid_: pause, handoff, human mode
 An image or PDF a Contact submits as evidence of a bank transfer for a video Appointment. Evidence only, never proof that funds arrived.
 _Avoid_: proof of payment, payment
 
+**Payment Link**:
+A Mercado Pago Checkout Pro URL (cards or Mercado Pago balance) for one video Appointment, expiring at its Receipt Deadline. Not proof of payment: the System confirms payment only after Mercado Pago's API reports an approved payment that matches the Appointment's reference, stored amount, MXN and the Doctor's account.
+
 **Payment Reference**:
 A short code unique to one Appointment that the Contact puts in the bank transfer's *concepto*, so the Doctor can match the deposit.
 _Avoid_: folio, payment ID
@@ -105,7 +108,11 @@ A Receipt that reaches the assistant after its Appointment's Hold has expired, w
 _Avoid_: expired receipt
 
 **Payment Verification** (UI: *Confirmar pago recibido*):
-The Doctor's explicit statement that the transferred funds actually arrived; the only thing that makes a video Appointment paid. Its opposite is rejecting the Receipt (UI: *No recibí el pago*).
+The Doctor's explicit Payment Verification states that bank-transfer funds arrived.
+The System confirms a matching Mercado Pago payment for the Appointment.
+Either source marks the video Appointment paid.
+A Receipt remains transfer evidence only. It never proves funds arrived.
+Rejecting a Receipt (UI: *No recibí el pago*) is a separate Doctor action.
 _Avoid_: receipt approval, payment confirmation
 
 ### Dashboard

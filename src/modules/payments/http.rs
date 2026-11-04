@@ -169,9 +169,8 @@ async fn associate(
   let Some(origin) = state.cfg.public_origin.as_deref() else {
     return service_unavailable();
   };
-  let tx = match begin(&state).await {
-    Ok(tx) => tx,
-    Err(response) => return response,
+  let Some(tx) = begin(&state).await else {
+    return service_unavailable();
   };
   let contact = match tx
     .query_one(sql(
@@ -264,9 +263,8 @@ async fn run_action(state: &AppState, receipt: Uuid, action: DomainAction) -> Re
   let Some(origin) = state.cfg.public_origin.as_deref() else {
     return service_unavailable();
   };
-  let tx = match begin(state).await {
-    Ok(tx) => tx,
-    Err(response) => return response,
+  let Some(tx) = begin(state).await else {
+    return service_unavailable();
   };
   let now = state.clock.now_millis();
   let result = match action {
@@ -284,18 +282,13 @@ async fn run_action(state: &AppState, receipt: Uuid, action: DomainAction) -> Re
   }
 }
 
-async fn begin(state: &AppState) -> Result<sea_orm::DatabaseTransaction, Response> {
-  let tx = state
-    .db
-    .conn
-    .begin()
-    .await
-    .map_err(|_| service_unavailable())?;
+async fn begin(state: &AppState) -> Option<sea_orm::DatabaseTransaction> {
+  let tx = state.db.conn.begin().await.ok()?;
   if whatsapp::bound_transaction(&tx).await.is_err() {
     let _ = tx.rollback().await;
-    return Err(service_unavailable());
+    return None;
   }
-  Ok(tx)
+  Some(tx)
 }
 
 async fn finish(tx: sea_orm::DatabaseTransaction, receipt: Uuid) -> Response {

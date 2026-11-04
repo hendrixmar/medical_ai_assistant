@@ -21,6 +21,7 @@ const PENDING_RECEIPT_MAX_AGE_MS: i64 = 180_000;
 #[derive(Clone, Copy)]
 enum Work {
   Expiry,
+  Reminder72h,
   Reminder24h,
   Reminder2h,
   ReviewPeriodic,
@@ -74,6 +75,7 @@ fn work(kind: &str, key: &str, appointment_id: Uuid) -> Option<(i64, Work, Optio
   let variant = parts.next()?;
   let work = match (kind, key_kind, variant) {
     ("expiry", "expiry", "deadline") => Work::Expiry,
+    ("reminders", "reminders", "72h") => Work::Reminder72h,
     ("reminders", "reminders", "24h") => Work::Reminder24h,
     ("reminders", "reminders", "2h") => Work::Reminder2h,
     ("review", "review", "periodic") => Work::ReviewPeriodic,
@@ -81,7 +83,7 @@ fn work(kind: &str, key: &str, appointment_id: Uuid) -> Option<(i64, Work, Optio
     _ => return None,
   };
   let scheduled_starts_at = match work {
-    Work::Reminder24h | Work::Reminder2h => {
+    Work::Reminder72h | Work::Reminder24h | Work::Reminder2h => {
       let starts_at = parts.next()?.parse::<i64>().ok()?;
       if parts.next().is_some() {
         return None;
@@ -359,15 +361,24 @@ fn appointment_status(appointment: &AppointmentState) -> Option<String> {
   ))
 }
 
-async fn practice_reminder_enabled(tx: &sea_orm::DatabaseTransaction) -> Result<bool, DbErr> {
+async fn practice_reminder_enabled(
+  tx: &sea_orm::DatabaseTransaction,
+  reminder: Work,
+) -> Result<bool, DbErr> {
+  let column = match reminder {
+    Work::Reminder72h => "reminder_72h_enabled",
+    Work::Reminder24h => "reminder_24h_enabled",
+    Work::Reminder2h => "reminder_2h_enabled",
+    _ => return Ok(false),
+  };
   let row = tx
     .query_one(sql(
-      "SELECT reminder_2h_enabled FROM practice WHERE id=1",
+      &format!("SELECT {column} AS enabled FROM practice WHERE id=1"),
       vec![],
     ))
     .await?
     .ok_or_else(|| DbErr::Custom("Practice is unavailable".into()))?;
-  row.try_get("", "reminder_2h_enabled")
+  row.try_get("", "enabled")
 }
 
 async fn review_settings(
@@ -463,6 +474,7 @@ async fn process_expiry(
   if updated.rows_affected() != 1 {
     return Err(DbErr::Custom("Appointment expiry state changed".into()));
   }
+  crate::modules::mercado_pago::store::recheck_preferences(tx, claim.appointment_id, now).await?;
   tx.execute(sql(
     "UPDATE appointment_holds SET active=false WHERE appointment_id=$1 AND active",
     vec![claim.appointment_id.into()],
@@ -586,13 +598,13 @@ async fn process_reminder(
   if appointment.starts_at <= now {
     return finish(tx, claim, now).await;
   }
-  if matches!(reminder, Work::Reminder2h) && !practice_reminder_enabled(tx).await? {
+  if !practice_reminder_enabled(tx, reminder).await? {
     return finish(tx, claim, now).await;
   }
-  let offset = if matches!(reminder, Work::Reminder24h) {
-    86_400_000
-  } else {
-    7_200_000
+  let offset = match reminder {
+    Work::Reminder72h => 259_200_000,
+    Work::Reminder24h => 86_400_000,
+    _ => 7_200_000,
   };
   let due_at = appointment.starts_at.saturating_sub(offset);
   if due_at > now {
@@ -612,10 +624,10 @@ async fn process_reminder(
     };
     (text, "status")
   };
-  let variant = if matches!(reminder, Work::Reminder24h) {
-    "24h"
-  } else {
-    "2h"
+  let variant = match reminder {
+    Work::Reminder72h => "72h",
+    Work::Reminder24h => "24h",
+    _ => "2h",
   };
   let key = format!(
     "appointment:{}:reminders:{}:{variant}",
@@ -812,7 +824,10 @@ async fn process(db: &Db, clock: &dyn Clock, claim: Claim, origin: &str) -> Resu
     tx.commit().await?;
     return Ok(());
   };
-  let reminder = matches!(task, Work::Reminder24h | Work::Reminder2h);
+  let reminder = matches!(
+    task,
+    Work::Reminder72h | Work::Reminder24h | Work::Reminder2h
+  );
   let rejected_expiry = matches!(task, Work::Expiry)
     && appointment.status == "awaiting_payment"
     && appointment.payment == "rejected"
@@ -829,7 +844,7 @@ async fn process(db: &Db, clock: &dyn Clock, claim: Claim, origin: &str) -> Resu
   }
   match task {
     Work::Expiry => process_expiry(&tx, &claim, &appointment, now, origin).await?,
-    Work::Reminder24h | Work::Reminder2h => {
+    Work::Reminder72h | Work::Reminder24h | Work::Reminder2h => {
       process_reminder(&tx, &claim, &appointment, task, now, origin).await?
     }
     Work::ReviewPeriodic | Work::ReviewUrgent => {

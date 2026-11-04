@@ -53,6 +53,102 @@ struct ReviewContext {
   expiry: ExpiryCheck,
 }
 
+pub(crate) struct PaymentConfirmation<'a> {
+  pub(crate) contact: Uuid,
+  pub(crate) actor: &'a str,
+  pub(crate) history_kind: &'a str,
+  pub(crate) message_key: &'a str,
+  pub(crate) message: &'a str,
+  pub(crate) origin: &'a str,
+  pub(crate) now: i64,
+}
+
+pub(crate) async fn confirm_appointment_payment(
+  tx: &DatabaseTransaction,
+  appointment: &Appointment,
+  confirmation: PaymentConfirmation<'_>,
+) -> Result<Option<i64>, DbErr> {
+  let PaymentConfirmation {
+    contact,
+    actor,
+    history_kind,
+    message_key,
+    message,
+    origin,
+    now,
+  } = confirmation;
+  if appointment.status != "awaiting_payment"
+    || !matches!(
+      appointment.payment.as_str(),
+      "awaiting_receipt" | "under_review" | "rejected"
+    )
+  {
+    return Ok(None);
+  }
+  let revision = next_revision(appointment.revision)?;
+  let event_id = appointment
+    .event_id
+    .clone()
+    .unwrap_or_else(|| appointment.id.simple().to_string());
+  let updated = tx
+    .execute(sql(
+      "UPDATE appointments SET status='confirmed',payment='verified',calendar_sync='pending',event_id=COALESCE(event_id,$2),revision=$3,updated_at=$4 WHERE id=$1 AND revision=$5 AND status='awaiting_payment' AND payment IN ('awaiting_receipt','under_review','rejected')",
+      vec![
+        appointment.id.into(),
+        event_id.into(),
+        revision.into(),
+        now.into(),
+        appointment.revision.into(),
+      ],
+    ))
+    .await?;
+  if updated.rows_affected() != 1 {
+    return Ok(None);
+  }
+  let released = tx
+    .execute(sql(
+      "UPDATE appointment_holds SET expires_at=NULL WHERE appointment_id=$1 AND active",
+      vec![appointment.id.into()],
+    ))
+    .await?;
+  if released.rows_affected() == 0 {
+    return Err(DbErr::Custom("Appointment Hold unavailable".into()));
+  }
+  crate::modules::mercado_pago::store::recheck_preferences(tx, appointment.id, now).await?;
+  appointment_store::history(tx, appointment.id, actor, history_kind, now).await?;
+  appointment_store::job(
+    tx,
+    appointment.id,
+    "calendar_sync",
+    now,
+    &format!("{}:{revision}:calendar_sync", appointment.id),
+  )
+  .await?;
+  appointment_store::job(
+    tx,
+    appointment.id,
+    "conflict",
+    now,
+    &format!("{}:{revision}:conflict", appointment.id),
+  )
+  .await?;
+  enqueue_text(
+    tx,
+    Message {
+      contact,
+      appointment: Some(appointment.id),
+      key: message_key,
+      text: message,
+      purpose: "status",
+      revision: Some(revision),
+    },
+    origin,
+    now,
+  )
+  .await?;
+  Ok(Some(revision))
+}
+
 pub async fn verify(
   tx: &DatabaseTransaction,
   receipt_id: Uuid,
@@ -78,62 +174,30 @@ pub async fn verify(
   ) {
     return Ok(ActionOutcome::Stale);
   }
-  let revision = next_revision(context.appointment.revision)?;
-  let event_id = context
-    .appointment
-    .event_id
-    .clone()
-    .unwrap_or_else(|| context.appointment.id.simple().to_string());
-  let updated = tx
-    .execute(sql(
-      "UPDATE appointments SET status='confirmed',payment='verified',calendar_sync='pending',event_id=COALESCE(event_id,$2),revision=$3,updated_at=$4 WHERE id=$1 AND revision=$5 AND status='awaiting_payment' AND payment IN ('awaiting_receipt','under_review')",
-      vec![context.appointment.id.into(), event_id.into(), revision.into(), now.into(), context.appointment.revision.into()],
-    ))
-    .await?;
-  if updated.rows_affected() != 1 {
+  let message_key = format!("receipt:{}:verified", context.receipt.id);
+  let Some(_) = confirm_appointment_payment(
+    tx,
+    &context.appointment,
+    PaymentConfirmation {
+      contact: context.receipt.contact_id,
+      actor: "Doctor",
+      history_kind: "payment_verified",
+      message_key: &message_key,
+      message: "El doctor confirmó su pago. La cita está en proceso de confirmación del calendario; le avisaré cuando se complete.",
+      origin,
+      now,
+    },
+  )
+  .await?
+  else {
     return Ok(ActionOutcome::Stale);
-  }
-  let released = tx
-    .execute(sql(
-      "UPDATE appointment_holds SET expires_at=NULL WHERE appointment_id=$1 AND active",
-      vec![context.appointment.id.into()],
-    ))
-    .await?;
-  if released.rows_affected() == 0 {
-    return Err(DbErr::Custom("Appointment Hold unavailable".into()));
-  }
+  };
   if !review_receipt(tx, &context.receipt, "verified", now).await? {
     return Err(DbErr::Custom(
       "Receipt changed during payment verification".into(),
     ));
   }
-  appointment_store::history(
-    tx,
-    context.appointment.id,
-    "Doctor",
-    "payment_verified",
-    now,
-  )
-  .await?;
   resolve_review_attention(tx, context.receipt.contact_id, context.appointment.id, now).await?;
-  appointment_store::job(
-    tx,
-    context.appointment.id,
-    "calendar_sync",
-    now,
-    &format!("{}:{revision}:calendar_sync", context.appointment.id),
-  )
-  .await?;
-  appointment_store::job(
-    tx,
-    context.appointment.id,
-    "conflict",
-    now,
-    &format!("{}:{revision}:conflict", context.appointment.id),
-  )
-  .await?;
-  enqueue_text(tx, Message { contact: context.receipt.contact_id, appointment: Some(context.appointment.id), key: &format!("receipt:{}:verified", context.receipt.id), text: "El doctor confirmó su pago. La cita está en proceso de confirmación del calendario; le avisaré cuando se complete.", purpose: "status", revision: Some(revision) }, origin, now)
-  .await?;
   Ok(ActionOutcome::Applied)
 }
 
@@ -224,6 +288,8 @@ pub async fn reject(
     if updated.rows_affected() != 1 {
       return Ok(ActionOutcome::Stale);
     }
+    crate::modules::mercado_pago::store::recheck_preferences(tx, context.appointment.id, now)
+      .await?;
     let held = tx
       .execute(sql(
         "UPDATE appointment_holds SET expires_at=$2 WHERE appointment_id=$1 AND active",
@@ -268,6 +334,15 @@ pub async fn reject(
         timezone: &context.appointment.timezone,
       },
       origin,
+      now,
+    )
+    .await?;
+    crate::modules::mercado_pago::store::schedule_preference(
+      tx,
+      context.appointment.id,
+      revision,
+      context.appointment.price_centavos,
+      deadline,
       now,
     )
     .await?;

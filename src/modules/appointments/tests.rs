@@ -42,6 +42,79 @@ async fn provider(State(sent): State<Arc<Mutex<Vec<String>>>>, request: Request)
         r#"{"content":[{"type":"text","text":"{\"intent\":\"schedule_in_person\",\"date_phrase\":\"pasado mañana\",\"time_phrase\":\"10 am\",\"uncertain\":false}"}]}"#,
       ).into_response()
     }
+    "/v1/chat/completions" => {
+      let bytes = to_bytes(request.into_body(), 16 * 1024).await.unwrap();
+      let wire: Value = serde_json::from_slice(&bytes).unwrap();
+      assert_eq!(wire["model"], "mercury-3");
+      assert_eq!(wire["reasoning_effort"], "medium");
+      let user_raw = wire["messages"][1]["content"].as_str().unwrap();
+      let user: Value = serde_json::from_str(user_raw).unwrap();
+      let stage = user["stage"].as_str().unwrap_or_default();
+      let text = user["text"].as_str().unwrap_or_default();
+      let args = match (stage, text) {
+        ("idle", value) if value.contains("cedula") || value.contains("especialidad") => json!({
+          "accion": "responder_faq",
+          "date_phrase": null,
+          "time_phrase": null,
+          "opcion": 1,
+          "uncertain": false
+        }),
+        ("idle", value) if value.contains("cancelar") => json!({
+          "accion": "cancelar_cita",
+          "date_phrase": null,
+          "time_phrase": null,
+          "uncertain": false
+        }),
+        ("idle", _) => json!({
+          "accion": "agendar",
+          "date_phrase": "pasado mañana",
+          "time_phrase": "10 am",
+          "uncertain": false
+        }),
+        ("booking_service", _) => json!({
+          "accion": "elegir_servicio",
+          "date_phrase": null,
+          "time_phrase": null,
+          "opcion": 1,
+          "uncertain": false
+        }),
+        ("booking_format", _) => json!({
+          "accion": "elegir_formato",
+          "date_phrase": null,
+          "time_phrase": null,
+          "formato": "in_person",
+          "uncertain": false
+        }),
+        _ => json!({
+          "accion": "agendar",
+          "date_phrase": null,
+          "time_phrase": null,
+          "uncertain": true
+        }),
+      };
+      axum::Json(json!({
+        "id": "chatcmpl-mercury-3",
+        "object": "chat.completion",
+        "model": "mercury-3",
+        "choices": [{
+          "index": 0,
+          "message": {
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [{
+              "id": "call_decidir",
+              "type": "function",
+              "function": {
+                "name": "decidir",
+                "arguments": args.to_string()
+              }
+            }]
+          },
+          "finish_reason": "tool_calls"
+        }]
+      }))
+      .into_response()
+    }
     "/api/default/new-message-id" => {
       axum::Json(json!({"id":Uuid::now_v7().simple().to_string()})).into_response()
     }
@@ -610,4 +683,246 @@ async fn natural_preference_and_explicit_offered_time_use_the_same_booking_rules
     let total = db.conn.query_one(sql("SELECT count(*) AS n FROM appointments", vec![])).await.unwrap().unwrap();
     assert_eq!(total.try_get::<i64>("", "n").unwrap(), 1, "An invented model date cannot book or mutate an Appointment");
   }).await;
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated TEST_DATABASE_URL Postgres database"]
+async fn mercury_3_decidir_agent_drives_booking_and_cancellation_without_bypassing_confirmation() {
+  with_database(|db| async move {
+    let mut j = Journey::new(&db).await;
+    drop(std::mem::take(&mut j.f.app));
+    let cfg = Arc::get_mut(&mut j.f.cfg).unwrap();
+    cfg.inception_api_key = Some("synthetic-mercury-key".to_owned());
+    cfg.mercury_model = Some("mercury-3".to_owned());
+    cfg.mercury_test_endpoint = Some(format!("{}/v1/chat/completions", j.base));
+    let (app, waha, _) = crate::app::compose(j.f.cfg.clone(), db.clone(), j.f.clock.clone());
+    j.f.app = app;
+    j.waha = waha.unwrap();
+    let day = chrono::DateTime::from_timestamp(j.f.clock.now(), 0)
+      .unwrap()
+      .date_naive();
+    let expected = (day + chrono::Duration::days(2))
+      .and_hms_opt(10, 0, 0)
+      .unwrap()
+      .and_utc()
+      .timestamp_millis();
+    for answer in [
+      "Quiero agendar para pasado mañana a las 10 am",
+      "Paciente Mercury",
+      "Me interesa el primer servicio",
+      "La quiero presencial en consultorio",
+    ] {
+      j.say(&db, answer).await;
+    }
+    j.say(&db, "10:00").await;
+    let appointment = j.latest(&db).await;
+    assert_eq!(appointment.starts_at, expected);
+    assert_eq!(appointment.format, "in_person");
+    assert_eq!(appointment.status, "confirmed");
+
+    // Mercury `cancelar_cita` starts the cancellation flow; only standalone `CONFIRMAR` cancels.
+    j.say(&db, "Quiero cancelar mi cita").await;
+    j.say(&db, "1").await;
+    assert_eq!(
+      store::get(&db.conn, appointment.id)
+        .await
+        .unwrap()
+        .unwrap()
+        .status,
+      "confirmed",
+      "Mercury decision cannot cancel an Appointment without standalone CONFIRMAR"
+    );
+    j.say(&db, "CONFIRMAR").await;
+    assert_eq!(
+      store::get(&db.conn, appointment.id)
+        .await
+        .unwrap()
+        .unwrap()
+        .status,
+      "cancelled"
+    );
+  })
+  .await;
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated TEST_DATABASE_URL Postgres database"]
+async fn verbatim_knowledge_72h_reminders_calendar_views_and_doctor_manual_creation_share_booking_rules(
+) {
+  with_database(|db| async move {
+    let mut j = Journey::new(&db).await;
+    drop(std::mem::take(&mut j.f.app));
+    let cfg = Arc::get_mut(&mut j.f.cfg).unwrap();
+    cfg.inception_api_key = Some("synthetic-mercury-key".to_owned());
+    cfg.mercury_model = Some("mercury-3".to_owned());
+    cfg.mercury_test_endpoint = Some(format!("{}/v1/chat/completions", j.base));
+    let (app, waha, _) = crate::app::compose(j.f.cfg.clone(), db.clone(), j.f.clock.clone());
+    j.f.app = app;
+    j.waha = waha.unwrap();
+
+    // 1. Doctor saves an approved verbatim knowledge entry in `/settings/knowledge`.
+    let entry_id = Uuid::now_v7().to_string();
+    let verbatim_answer =
+      "Médico internista certificado. Cédula profesional 1234567. Traer estudios previos.";
+    assert_eq!(
+      j.f
+        .post(
+          "/settings/knowledge",
+          &[
+            ("entry_id", &entry_id),
+            ("topic", "Especialidad y cédula"),
+            ("question", "¿Cuál es su especialidad y cédula?"),
+            ("answer", verbatim_answer),
+            ("enabled", "true"),
+          ],
+        )
+        .await
+        .status(),
+      303
+    );
+    let knowledge_html = text(
+      authenticated_get(&j.f.app, "/settings/knowledge", &j.f.session).await,
+    )
+    .await;
+    assert!(knowledge_html.contains(verbatim_answer));
+
+    // Contact asks about specialty -> Mercury `responder_faq` selects entry 1 -> rendered verbatim.
+    j.say(&db, "Tengo duda sobre su especialidad y cedula").await;
+    assert!(
+      j.sent
+        .lock()
+        .await
+        .iter()
+        .any(|msg| msg.contains(verbatim_answer)),
+      "Contact must receive the Doctor's approved text verbatim"
+    );
+
+    // 2. Enable 72-hour reminder and manually create an Appointment from `/appointments/create`.
+    db.conn
+      .execute_unprepared("UPDATE practice SET reminder_72h_enabled=true WHERE id=1")
+      .await
+      .unwrap();
+    let service_id: Uuid = db
+      .conn
+      .query_one(sql("SELECT id FROM services LIMIT 1", vec![]))
+      .await
+      .unwrap()
+      .unwrap()
+      .try_get("", "id")
+      .unwrap();
+    let contact_id: Uuid = db
+      .conn
+      .query_one(sql("SELECT id FROM contacts LIMIT 1", vec![]))
+      .await
+      .unwrap()
+      .unwrap()
+      .try_get("", "id")
+      .unwrap();
+    let day = chrono::DateTime::from_timestamp(j.f.clock.now(), 0)
+      .unwrap()
+      .date_naive();
+    let target_date = (day + chrono::Duration::days(5)).to_string();
+    let create_res = j
+      .f
+      .post(
+        "/appointments/create",
+        &[
+          ("patient_name", "Paciente Manual Panel"),
+          ("contact_id", &contact_id.to_string()),
+          ("contact_phone", ""),
+          ("service_id", &service_id.to_string()),
+          ("format", "in_person"),
+          ("date", &target_date),
+          ("time", "11:00"),
+        ],
+      )
+      .await;
+    assert_eq!(create_res.status(), 303);
+    let created = j.latest(&db).await;
+    assert_eq!(created.patient_name, "Paciente Manual Panel");
+    assert_eq!(created.status, "confirmed");
+
+    // Verify actor in appointment_history is Doctor, and double-booking the same slot is rejected (422).
+    let actor: String = db
+      .conn
+      .query_one(sql(
+        "SELECT actor FROM appointment_history WHERE appointment_id=$1 ORDER BY id LIMIT 1",
+        vec![created.id.into()],
+      ))
+      .await
+      .unwrap()
+      .unwrap()
+      .try_get("", "actor")
+      .unwrap();
+    assert_eq!(actor, "Doctor");
+    let duplicate_res = j
+      .f
+      .post(
+        "/appointments/create",
+        &[
+          ("patient_name", "Paciente Duplicado"),
+          ("contact_id", &contact_id.to_string()),
+          ("contact_phone", ""),
+          ("service_id", &service_id.to_string()),
+          ("format", "in_person"),
+          ("date", &target_date),
+          ("time", "11:00"),
+        ],
+      )
+      .await;
+    assert_eq!(
+      duplicate_res.status(),
+      422,
+      "Manual creation must respect active Holds and reject double booking"
+    );
+
+    // 3. Verify daily, weekly, and monthly calendar views show the manually created Appointment.
+    for mode in ["day", "week", "month"] {
+      let view_res = authenticated_get(
+        &j.f.app,
+        &format!("/appointments?view={mode}&date={target_date}"),
+        &j.f.session,
+      )
+      .await;
+      assert_eq!(view_res.status(), 200);
+      let body = text(view_res).await;
+      assert!(body.contains("Paciente Manual Panel"), "mode={mode}");
+      assert!(body.contains("11:00-11:30"), "mode={mode}");
+    }
+
+    // 4. Sync calendar so 72h, 24h, and 2h reminders are scheduled, then fire the 72h reminder.
+    j.calendar(&db).await;
+    let reminder_72h_count: i64 = db
+      .conn
+      .query_one(sql(
+        "SELECT count(*) AS n FROM appointment_jobs WHERE appointment_id=$1 AND kind='reminders' AND dedupe_key LIKE '%:reminders:72h:%'",
+        vec![created.id.into()],
+      ))
+      .await
+      .unwrap()
+      .unwrap()
+      .try_get("", "n")
+      .unwrap();
+    assert_eq!(reminder_72h_count, 1);
+    let due_72h = created.starts_at - 72 * 3_600_000;
+    j.f
+      .clock
+      .advance((due_72h - j.f.clock.now_millis()) / 1000);
+    assert!(timers::run_once(&db, j.f.clock.as_ref(), &j.f.cfg)
+      .await
+      .unwrap());
+    let queued_72h: i64 = db
+      .conn
+      .query_one(sql(
+        "SELECT count(*) AS n FROM outbox_messages WHERE appointment_id=$1 AND purpose='reminder' AND dedupe_key LIKE '%:72h'",
+        vec![created.id.into()],
+      ))
+      .await
+      .unwrap()
+      .unwrap()
+      .try_get("", "n")
+      .unwrap();
+    assert_eq!(queued_72h, 1);
+  })
+  .await;
 }

@@ -61,8 +61,9 @@ services:
     # WahaConfig permits plaintext HTTP only to loopback. The app shares WAHA's
     # namespace, while both host-published ports remain bound to 127.0.0.1.
     network_mode: service:waha
-    # Keep optional Google/Claude inputs absent by omitting them from this private
-    # app-only file. Do not reuse the Compose file containing database admin secrets.
+    # Keep optional Google/Mercury/Claude/Mercado Pago inputs absent unless provisioned. Set
+    # INCEPTION_API_KEY and MERCADO_PAGO_ACCESS_TOKEN in this private app-only file; never reuse
+    # the Compose file containing database secrets.
     env_file:
       - ${APP_PROVIDER_ENV_FILE:?Set APP_PROVIDER_ENV_FILE to a private app-only provider env file; it may be empty}
     depends_on:

@@ -4,6 +4,7 @@ pub mod doctor;
 pub(crate) mod doctor_number;
 pub mod google_calendar;
 pub mod health;
+pub mod mercado_pago;
 pub mod payments;
 pub(crate) mod practice;
 pub mod whatsapp;

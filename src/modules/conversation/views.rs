@@ -24,6 +24,11 @@ pub enum AttentionKind {
   ReceiptSelection,
   ReceiptClarification,
   RefundDue,
+  OnlinePaymentLate,
+  OnlinePaymentDuplicate,
+  OnlinePaymentMismatch,
+  OnlinePaymentReversed,
+  MercadoPagoUnauthorized,
   CalendarConflict,
   CalendarSyncFailed,
   CalendarAvailabilityUnavailable,
@@ -263,7 +268,27 @@ fn attention_content(view: &DashboardView<'_>) -> String {
         ),
         AttentionKind::RefundDue => (
           "Reembolso pendiente",
-          "El reembolso debe gestionarse fuera del sistema; no se inició ningún reembolso automático.",
+          "Si el pago llegó por Mercado Pago, abre la cita y pulsa «Reembolsar con Mercado Pago». Una transferencia se reembolsa fuera del sistema. Nada se reembolsa automáticamente.",
+        ),
+        AttentionKind::OnlinePaymentLate => (
+          "Pago con Mercado Pago tardío",
+          "Mercado Pago registró un pago cuando la cita ya no podía confirmarse. Abre la cita para reembolsarlo o contacta al paciente; el sistema no hizo ningún reembolso.",
+        ),
+        AttentionKind::OnlinePaymentDuplicate => (
+          "Posible pago duplicado con Mercado Pago",
+          "La cita ya figuraba pagada cuando llegó este pago. Abre la cita para reembolsarlo y contacta al paciente; no se realizó ningún reembolso automático.",
+        ),
+        AttentionKind::OnlinePaymentMismatch => (
+          "Pago de Mercado Pago que no coincide",
+          "El monto, la moneda, la referencia o la cuenta receptora no coinciden con la cita. No se confirmó el pago; revisa la cita y decide si reembolsarlo.",
+        ),
+        AttentionKind::OnlinePaymentReversed => (
+          "Pago de Mercado Pago revertido",
+          "Mercado Pago reporta un reembolso o contracargo que no inició el asistente. El pago verificado no se cambió automáticamente; revisa la cita.",
+        ),
+        AttentionKind::MercadoPagoUnauthorized => (
+          "Mercado Pago rechazó el token",
+          "No se crean enlaces de pago nuevos. Pide a quien administra la instalación que revise el token de acceso; las transferencias siguen disponibles.",
         ),
         AttentionKind::CalendarConflict => (
           "Conflicto en un calendario",

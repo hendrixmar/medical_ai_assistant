@@ -3,8 +3,8 @@
 ## Safety boundary
 
 - This is a secure dashboard foundation for one Practice and one Doctor per deployment, not a clinical record or ready product release. Do not add longitudinal patient records or imply unavailable Appointment journeys are implemented.
-- A Patient is named on one Appointment only; a Receipt is transfer evidence, never proof funds arrived. Only the Doctor's explicit Payment Verification confirms receipt.
-- Never log, print, commit, or send passwords, TOTP/encryption keys, enrollment URIs, cookies, tokens, OAuth credentials, or patient/contact data. Doctor enrollment and deployment remain operator-only.
+- A Patient is named on one Appointment only. A Receipt is transfer evidence, never proof funds arrived. A Payment Link is not proof either. Only the Doctor's explicit Payment Verification or the System's confirmation of a matching Mercado Pago payment can mark a video Appointment paid.
+- Never log, print, commit, or send passwords, TOTP/encryption keys, Mercado Pago access tokens, enrollment URIs, cookies, tokens, OAuth credentials, or patient/contact data. Doctor enrollment and deployment remain operator-only.
 
 ## Project workflow
 

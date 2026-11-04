@@ -41,7 +41,12 @@ async fn main() {
     .expect("Failed to bind address");
 
   let clock = std::sync::Arc::new(server::modules::doctor::SystemClock);
-  let (router, client, google) = server::app::compose(cfg.clone(), db.clone(), clock.clone());
+  let (router, client, google, mercado_pago) = server::app::compose_with_mercado_pago(
+    cfg.clone(),
+    db.clone(),
+    clock.clone(),
+    cfg.mercado_pago.clone(),
+  );
   let (google_db, google_clock, google_cfg) = (db.clone(), clock.clone(), cfg.clone());
   let conversation_google = google.clone();
   let google_worker = tokio::spawn(async move {
@@ -70,6 +75,26 @@ async fn main() {
       .is_err()
       {
         tracing::warn!("Appointment calendar work remains pending");
+      }
+    }
+  });
+  let (payment_db, payment_clock, payment_cfg, payment_client) =
+    (db.clone(), clock.clone(), cfg.clone(), mercado_pago);
+  let payment_worker = tokio::spawn(async move {
+    let mut poll = tokio::time::interval(std::time::Duration::from_secs(5));
+    poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+      poll.tick().await;
+      if server::modules::mercado_pago::worker::run_once(
+        &payment_db,
+        payment_clock.as_ref(),
+        &payment_cfg,
+        payment_client.as_ref(),
+      )
+      .await
+      .is_err()
+      {
+        tracing::warn!("Mercado Pago payment work remains pending");
       }
     }
   });
@@ -186,6 +211,7 @@ async fn main() {
         worker,
         sender,
         google_worker,
+        payment_worker,
         appointment_worker,
         recovery_worker,
       ];

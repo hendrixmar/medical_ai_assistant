@@ -79,3 +79,70 @@ async fn oauth_uses_exact_scopes_pkce_live_session_and_encrypted_fresh_pair() {
     server.abort();
   }).await;
 }
+
+#[tokio::test]
+#[ignore = "requires dedicated TEST_DATABASE_URL Postgres database"]
+async fn disconnect_forgets_grant_locally_and_reports_revocation_honestly() {
+  use std::sync::atomic::{AtomicBool, Ordering};
+  with_database(|db| async move {
+    let (mut cfg, clock, old_app, totp) = fixture(&db).await;
+    drop(old_app);
+    let revoked = Arc::new(tokio::sync::Mutex::new(Vec::<String>::new()));
+    let revoke_ok = Arc::new(AtomicBool::new(false));
+    let (capture, ok) = (revoked.clone(), revoke_ok.clone());
+    let provider = axum::Router::new()
+      .route("/token", axum::routing::post(|| async {
+        axum::Json(serde_json::json!({"access_token":ACCESS,"refresh_token":REFRESH,"expires_in":3600,"token_type":"Bearer","scope":SCOPES}))
+      }))
+      .route("/revoke", axum::routing::post(move |body: String| {
+        let (capture, ok) = (capture.clone(), ok.clone());
+        async move {
+          capture.lock().await.push(body);
+          if ok.load(Ordering::SeqCst) { axum::http::StatusCode::OK } else { axum::http::StatusCode::SERVICE_UNAVAILABLE }
+        }
+      }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, provider).await.unwrap(); });
+    let mut google = super::config::GoogleConfig::parse(Some("client"), Some("CLIENT_SECRET_SENTINEL"), Some(&base64::engine::general_purpose::STANDARD.encode([71;32])), Some("https://practice.test")).unwrap().unwrap();
+    google.test_endpoints = Some((format!("{base}/token").parse().unwrap(), format!("{base}/").parse().unwrap()));
+    Arc::get_mut(&mut cfg).unwrap().google = Some(google);
+    let app = crate::app::router_with_clock(cfg, db.clone(), clock);
+    let session = signed_in(&app, &totp, NOW + 30).await;
+    let origin = Some("https://practice.test");
+    let connect = |csrf: String| {
+      let (app, session) = (app.clone(), session.clone());
+      async move {
+        let response = post(&app,"/settings/google/connect",Some(&session),origin,&[("csrf_token",&csrf)]).await;
+        let url = reqwest::Url::parse(response.headers()["location"].to_str().unwrap()).unwrap();
+        let state = url.query_pairs().find(|(k,_)| k=="state").unwrap().1.into_owned();
+        authenticated_get(&app,&format!("/settings/google/callback?state={state}&code=CODE"),&session).await;
+      }
+    };
+    let status = || async {
+      let row = db.conn.query_one(Statement::from_string(DbBackend::Postgres,"SELECT status,notice,credential_ciphertext IS NULL AS cleared FROM google_connection WHERE id=1")).await.unwrap().unwrap();
+      (row.try_get::<String>("","status").unwrap(), row.try_get::<Option<String>>("","notice").unwrap(), row.try_get::<bool>("","cleared").unwrap())
+    };
+    let csrf = field(&text(authenticated_get(&app,"/settings/google",&session).await).await,"csrf_token");
+    assert_eq!(post(&app,"/settings/google/disconnect",Some(&session),None,&[("csrf_token",&csrf)]).await.status(),403,"exact origin required");
+    connect(csrf.clone()).await;
+    let page = text(authenticated_get(&app,"/settings/google",&session).await).await;
+    assert!(page.contains("Desconectar Google"));
+
+    // Revocation failure still forgets local credentials but claims nothing about Google.
+    let response = post(&app,"/settings/google/disconnect",Some(&session),origin,&[("csrf_token",&csrf)]).await;
+    assert_eq!(response.status(),303);
+    assert_eq!(status().await,("disconnected".into(),Some("disconnected_revoke_unconfirmed".into()),true));
+    assert_eq!(revoked.lock().await.as_slice(),[format!("token={REFRESH}")]);
+    let page = text(authenticated_get(&app,"/settings/google",&session).await).await;
+    assert!(page.contains("Google no confirmó la revocación"));
+    assert!(page.contains("Conectar Google") && !page.contains("Desconectar Google"));
+
+    revoke_ok.store(true, Ordering::SeqCst);
+    connect(csrf.clone()).await;
+    post(&app,"/settings/google/disconnect",Some(&session),origin,&[("csrf_token",&csrf)]).await;
+    assert_eq!(status().await,("disconnected".into(),Some("disconnected".into()),true));
+    assert!(text(authenticated_get(&app,"/settings/google",&session).await).await.contains("Google confirmó la revocación"));
+    server.abort();
+  }).await;
+}

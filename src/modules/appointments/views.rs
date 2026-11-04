@@ -14,6 +14,74 @@ impl Period {
     }
   }
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum CalendarMode {
+  Day,
+  Week,
+  Month,
+}
+
+impl CalendarMode {
+  pub(super) fn query(self) -> &'static str {
+    match self {
+      Self::Day => "day",
+      Self::Week => "week",
+      Self::Month => "month",
+    }
+  }
+
+  pub(super) fn label(self) -> &'static str {
+    match self {
+      Self::Day => "Día",
+      Self::Week => "Semana",
+      Self::Month => "Mes",
+    }
+  }
+}
+
+pub(super) struct CalendarSlotItem {
+  pub id: String,
+  pub patient_name: String,
+  pub service_name: String,
+  pub format: String,
+  pub time_range: String,
+  pub status: String,
+  pub hold_active: bool,
+}
+
+pub(super) struct CalendarDayGroup {
+  pub date_label: String,
+  pub items: Vec<CalendarSlotItem>,
+}
+
+pub(super) struct ServiceOption {
+  pub id: String,
+  pub label: String,
+}
+
+pub(super) struct ContactOption {
+  pub id: String,
+  pub label: String,
+}
+
+pub(super) struct CreateFormView<'a> {
+  pub services: &'a [ServiceOption],
+  pub contacts: &'a [ContactOption],
+  pub timezone: Option<&'a str>,
+  pub error: Option<&'a str>,
+}
+
+pub(super) struct CalendarView<'a> {
+  pub csrf_token: &'a str,
+  pub mode: CalendarMode,
+  pub anchor_date: &'a str,
+  pub prev_date: &'a str,
+  pub next_date: &'a str,
+  pub range_label: &'a str,
+  pub timezone: &'a str,
+  pub days: &'a [CalendarDayGroup],
+  pub create_form: CreateFormView<'a>,
+}
 
 pub(super) struct ListItem {
   pub id: String,
@@ -34,8 +102,8 @@ pub(super) struct ListView<'a> {
   pub previous_page: Option<u32>,
   pub next_page: Option<u32>,
   pub load_error: bool,
+  pub create_form: Option<CreateFormView<'a>>,
 }
-
 pub(super) fn appointment_list(view: ListView<'_>) -> String {
   let content = if view.load_error {
     format!(
@@ -83,6 +151,9 @@ pub(super) fn appointment_list(view: ListView<'_>) -> String {
     r#"<nav class="appointment-period" aria-label="Filtrar citas">
 <a href="/appointments?period=upcoming"{}>Próximas</a>
 <a href="/appointments?period=past"{}>Pasadas</a>
+<a href="/appointments?view=day">Día</a>
+<a href="/appointments?view=week">Semana</a>
+<a href="/appointments?view=month">Mes</a>
 </nav>"#,
     if view.period == Period::Upcoming {
       " aria-current=\"page\""
@@ -96,6 +167,11 @@ pub(super) fn appointment_list(view: ListView<'_>) -> String {
     }
   );
   let pagination = list_pagination(&view);
+  let create_section = view
+    .create_form
+    .as_ref()
+    .map(|form| render_create_form(view.csrf_token, form))
+    .unwrap_or_default();
   document(
     "Citas",
     &format!(
@@ -106,9 +182,169 @@ pub(super) fn appointment_list(view: ListView<'_>) -> String {
 {tabs}
 {content}
 {pagination}
+{create_section}
 </main>"#,
       navigation_page(view.csrf_token, NavigationPage::Appointments)
     ),
+  )
+}
+
+pub(super) fn appointment_calendar(view: CalendarView<'_>) -> String {
+  let tabs = format!(
+    r#"<nav class="appointment-period" aria-label="Cambiar vista de agenda">
+<a href="/appointments?period=upcoming">Próximas</a>
+<a href="/appointments?period=past">Pasadas</a>
+<a href="/appointments?view=day&amp;date={date}"{day_current}>Día</a>
+<a href="/appointments?view=week&amp;date={date}"{week_current}>Semana</a>
+<a href="/appointments?view=month&amp;date={date}"{month_current}>Mes</a>
+</nav>"#,
+    date = escape(view.anchor_date),
+    day_current = if view.mode == CalendarMode::Day {
+      " aria-current=\"page\""
+    } else {
+      ""
+    },
+    week_current = if view.mode == CalendarMode::Week {
+      " aria-current=\"page\""
+    } else {
+      ""
+    },
+    month_current = if view.mode == CalendarMode::Month {
+      " aria-current=\"page\""
+    } else {
+      ""
+    },
+  );
+  let mode_query = view.mode.query();
+  let nav = format!(
+    r#"<nav class="attention-pagination" aria-label="Navegar fechas de calendario">
+<a class="text-link" href="/appointments?view={mode_query}&amp;date={}" rel="prev">Periodo anterior</a>
+<span><strong>{} ({})</strong></span>
+<a class="text-link" href="/appointments?view={mode_query}&amp;date={}" rel="next">Periodo siguiente</a>
+</nav>"#,
+    escape(view.prev_date),
+    escape(view.range_label),
+    escape(view.timezone),
+    escape(view.next_date),
+  );
+  let mut grid =
+    String::from("<section class=\"calendar-grid\" aria-label=\"Calendario de citas\">");
+  for day in view.days {
+    grid.push_str(&format!(
+      "<article class=\"dashboard-section\"><h2>{}</h2>",
+      escape(&day.date_label)
+    ));
+    if day.items.is_empty() {
+      grid.push_str("<p class=\"muted\">Sin citas ni retenciones activas.</p>");
+    } else {
+      grid.push_str("<ul class=\"appointment-list\" role=\"list\">");
+      for item in &day.items {
+        let hold_badge = if item.hold_active {
+          " · Retención activa"
+        } else {
+          ""
+        };
+        grid.push_str(&format!(
+          r#"<li><h3><a href="/appointments/{}">{} — {}</a></h3><p>{} · {}{}</p><p class="muted">Estado: {}</p></li>"#,
+          escape(&item.id),
+          escape(&item.time_range),
+          escape(&item.patient_name),
+          escape(&item.service_name),
+          escape(&item.format),
+          hold_badge,
+          escape(&item.status),
+        ));
+      }
+      grid.push_str("</ul>");
+    }
+    grid.push_str("</article>");
+  }
+  grid.push_str("</section>");
+  let create_section = render_create_form(view.csrf_token, &view.create_form);
+  document(
+    &format!("Calendario ({})", view.mode.label()),
+    &format!(
+      r#"{}
+<main id="contenido" class="page-shell" tabindex="-1">
+<h1>Calendario de citas — {}</h1>
+<p class="intro">Muestra las mismas citas y retenciones activas que consulta el asistente de WhatsApp.</p>
+{tabs}
+{nav}
+{grid}
+{create_section}
+</main>"#,
+      navigation_page(view.csrf_token, NavigationPage::Appointments),
+      escape(view.mode.label()),
+    ),
+  )
+}
+
+fn render_create_form(csrf_token: &str, form: &CreateFormView<'_>) -> String {
+  let error_banner = form
+    .error
+    .map(|msg| {
+      format!(
+        r#"<div class="form-error" role="alert" tabindex="-1" autofocus><p>{}</p></div>"#,
+        escape(msg)
+      )
+    })
+    .unwrap_or_default();
+  let Some(tz) = form.timezone else {
+    return format!(
+      r#"<section class="dashboard-section" aria-labelledby="manual-create-title">
+<h2 id="manual-create-title">Registrar cita desde el panel</h2>
+{error_banner}
+<p class="muted">Completa primero los datos, servicios y horarios del consultorio en Configuración antes de registrar citas manualmente.</p>
+</section>"#
+    );
+  };
+  if form.services.is_empty() {
+    return format!(
+      r#"<section class="dashboard-section" aria-labelledby="manual-create-title">
+<h2 id="manual-create-title">Registrar cita desde el panel</h2>
+{error_banner}
+<p class="muted">Añade al menos un servicio en Configuración para poder registrar citas.</p>
+</section>"#
+    );
+  }
+  let mut service_options = String::new();
+  for svc in form.services {
+    service_options.push_str(&format!(
+      "<option value=\"{}\">{}</option>",
+      escape(&svc.id),
+      escape(&svc.label)
+    ));
+  }
+  let mut contact_options =
+    String::from("<option value=\"\">Nuevo contacto o teléfono indicado abajo</option>");
+  for contact in form.contacts {
+    contact_options.push_str(&format!(
+      "<option value=\"{}\">{}</option>",
+      escape(&contact.id),
+      escape(&contact.label)
+    ));
+  }
+  format!(
+    r#"<section class="dashboard-section" aria-labelledby="manual-create-title">
+<h2 id="manual-create-title">Registrar cita desde el panel</h2>
+<p class="muted">Aplica las mismas reglas de horario, retenciones (Holds), sincronización con Google Calendar y recordatorios ({tz}).</p>
+{error_banner}
+<form class="settings-form" method="post" action="/appointments/create">
+<input type="hidden" name="csrf_token" value="{csrf}">
+<div class="field"><label for="patient_name">Nombre del paciente (solo para esta cita)</label><input id="patient_name" name="patient_name" type="text" maxlength="120" required></div>
+<div class="field"><label for="contact_id">Contacto existente (opcional)</label><select id="contact_id" name="contact_id">{contact_options}</select></div>
+<div class="field"><label for="contact_phone">Teléfono de WhatsApp (si no eliges un contacto existente)</label><input id="contact_phone" name="contact_phone" type="text" placeholder="5215512345678"></div>
+<div class="field"><label for="service_id">Servicio</label><select id="service_id" name="service_id" required>{service_options}</select></div>
+<div class="field"><label for="format">Formato</label><select id="format" name="format" required><option value="in_person">Presencial</option><option value="video">Videollamada</option></select></div>
+<div class="field-pair">
+<div class="field"><label for="date">Fecha ({tz})</label><input id="date" name="date" type="date" required></div>
+<div class="field"><label for="time">Hora ({tz})</label><input id="time" name="time" type="time" required></div>
+</div>
+<div class="form-actions"><button class="primary-button" type="submit">Registrar cita</button></div>
+</form>
+</section>"#,
+    tz = escape(tz),
+    csrf = escape(csrf_token),
   )
 }
 
@@ -168,6 +404,8 @@ pub(super) struct DetailView {
   pub can_cancel: bool,
   pub can_reschedule: bool,
   pub can_resolve_refund: bool,
+  /// Mercado Pago payment ids the Doctor may refund through the API.
+  pub mercado_pago_refunds: Vec<String>,
   pub receipts: Vec<ReceiptLink>,
   pub history: Vec<HistoryEntry>,
 }
@@ -227,6 +465,19 @@ pub(super) fn appointment_detail(csrf_token: &str, view: &DetailView) -> String 
 </form>"#,
       escape(&view.id),
       escape(csrf_token)
+    ));
+  }
+  for payment in &view.mercado_pago_refunds {
+    actions.push_str(&format!(
+      r#"<form method="post" action="/appointments/{}/mercado-pago/{}/refund">
+<input type="hidden" name="csrf_token" value="{}">
+<p>Pago de Mercado Pago {}: el reembolso total se solicita a Mercado Pago y no cambia el pago verificado.</p>
+<button class="primary-button" type="submit">Reembolsar con Mercado Pago</button>
+</form>"#,
+      escape(&view.id),
+      escape(payment),
+      escape(csrf_token),
+      escape(payment)
     ));
   }
   if view.can_resolve_refund {

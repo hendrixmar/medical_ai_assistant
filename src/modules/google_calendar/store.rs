@@ -173,6 +173,39 @@ pub(super) async fn failed(db: &Db, attempt: &Attempt) -> Result<(), Error> {
   tx.commit().await?;
   Ok(())
 }
+/// Forget the grant locally first; the caller then asks Google to revoke the returned
+/// refresh token. A later grant needs a new connection and calendar reselection.
+pub(super) async fn disconnect(
+  db: &Db,
+  clock: &dyn Clock,
+  config: &GoogleConfig,
+  session: &DoctorSession,
+) -> Result<(i64, Option<String>), Error> {
+  let tx = transaction(db).await?;
+  live(&tx, &session.hash, clock.now_millis()).await?;
+  let row = lock(&tx).await?;
+  let generation = row.try_get::<i64>("", "generation")? + 1;
+  let refresh = row
+    .try_get::<Option<Vec<u8>>>("", "credential_ciphertext")?
+    .and_then(|_| decrypt(&row, config).ok())
+    .map(|tokens| tokens.refresh);
+  tx.execute(sql("UPDATE google_connection SET status='disconnected',generation=$1,token_version=token_version+1,credential_ciphertext=NULL,credential_nonce=NULL,credential_expires_at=NULL,refresh_claim=NULL,refresh_deadline=NULL,refresh_dispatched=false,selection_version=selection_version+1,booking_calendar=NULL,booking_label=NULL,blocking_calendars='[]',current_probe_id=NULL,permission_checked_at=NULL,capability_checked_at=NULL,notice='disconnected_revoke_unconfirmed' WHERE id=1",vec![generation.into()])).await?;
+  tx.execute(sql("UPDATE google_auth_attempts SET outcome='superseded',verifier_ciphertext=NULL,verifier_nonce=NULL WHERE outcome='pending'",vec![])).await?;
+  // Same as a new grant: committed test events keep their original target for review.
+  tx.execute(sql("UPDATE google_probes SET phase='attention',cleanup_outcome='unresolved',reason='connection_changed',claim=NULL,claim_deadline=NULL WHERE phase NOT IN ('complete','attention') AND create_committed_at IS NOT NULL",vec![])).await?;
+  tx.execute(sql("UPDATE google_probes SET phase='complete',cleanup_outcome='not_created',reason='connection_changed',claim=NULL,claim_deadline=NULL WHERE phase='prepared' AND create_committed_at IS NULL",vec![])).await?;
+  tx.commit().await?;
+  Ok((generation, refresh))
+}
+pub(super) async fn revoked(db: &Db, generation: i64) -> Result<(), Error> {
+  db.conn
+    .execute(sql(
+      "UPDATE google_connection SET notice='disconnected' WHERE id=1 AND generation=$1 AND status='disconnected'",
+      vec![generation.into()],
+    ))
+    .await?;
+  Ok(())
+}
 pub(super) async fn install(
   db: &Db,
   clock: &dyn Clock,

@@ -73,13 +73,19 @@ pub(crate) fn needs_parser(text: &str) -> bool {
     return false;
   };
   let query = without_question_marks(&normalized);
-  let Some(date_question) = query
+  if let Some(date_question) = query
     .strip_prefix("qué tengo el ")
     .or_else(|| query.strip_prefix("que tengo el "))
-  else {
-    return false;
-  };
-  !has_mutation_word(date_question) && date_question.split_whitespace().any(is_date_cue)
+  {
+    return !has_mutation_word(date_question) && date_question.split_whitespace().any(is_date_cue);
+  }
+  let has_agenda_cue = query.split_whitespace().any(|word| {
+    matches!(
+      word.trim_matches(|ch: char| !ch.is_alphanumeric()),
+      "agenda" | "citas" | "cita" | "tengo"
+    )
+  });
+  has_agenda_cue && query.split_whitespace().any(is_date_cue)
 }
 
 fn has_mutation_word(text: &str) -> bool {

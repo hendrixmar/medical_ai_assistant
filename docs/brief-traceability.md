@@ -42,8 +42,8 @@ Disposition vocabulary (exactly one per functional row): `Implemented`,
 |---|---|---|---|
 | §3.1 | Official WhatsApp Business Platform integration | Rejected by rev.2 | Issue #2 Solution + `docs/integrations/waha.md`: WAHA/GOWS on the Practice Number instead of the official Platform |
 | §3.1 | Receive automatic messages from campaigns and direct Contacts | Implemented | Signed WAHA webhook intake `POST /api/v1/webhooks/waha` in `src/modules/whatsapp/http.rs`; `src/modules/whatsapp/inbox.rs` |
-| §3.1 | Understand free text / open questions; context memory within the authorized conversation | Implemented | ADR-0002 closed parser (`src/modules/conversation/parser.rs`, optional Claude preference parsing) + durable conversation state `src/modules/conversation/` |
-| §3.1 | Specific answers on specialty, track record, consultation types, price, location, duration, administrative preparation | Future issue filed | #30. Doctor-authored knowledge answers are a future delta; today only Practice/Service facts configured in `src/modules/practice/` are rendered |
+| §3.1 | Understand free text / open questions; context memory within the authorized conversation | Implemented | ADR-0002 & ADR-0005 (`src/modules/conversation/parser.rs`, optional Mercury 3 `decidir` tool with `reasoning_effort="medium"` or Claude fallback) + durable conversation state `src/modules/conversation/` |
+| §3.1 | Specific answers on specialty, track record, consultation types, price, location, duration, administrative preparation | Implemented | Doctor-authored verbatim knowledge answers (`knowledge_entries` in `src/modules/practice/`, `/settings/knowledge`) + Practice/Service facts |
 | §3.1 | Everyday language and emojis when appropriate; per-practice instruction personalization | Rejected by rev.2 | ADR-0002: factual copy is application-rendered templates, not per-practice generated tone; `src/modules/conversation/templates.rs` |
 | §3.1 | Recover interrupted conversations within consent/messaging rules | Implemented | Durable inbox + conversation jobs and WAHA recovery/backfill in `src/modules/whatsapp/recovery.rs`; restart-safe processing jobs |
 | §3.1 | Transfer to reception on request, unresolved doubt or sensitive case | Implemented | Followup Requests + Contact-scoped Takeover (`src/modules/whatsapp/takeover.rs`); sensitive/out-of-scope input becomes a Followup Request |
@@ -61,8 +61,8 @@ Disposition vocabulary (exactly one per functional row): `Implemented`,
 
 | Brief ref | Requirement (paraphrase) | Disposition | Authority / where |
 |---|---|---|---|
-| §4 | Each Doctor administers content, approves answers and updates agent knowledge without code changes | Future issue filed | #30. Configuration of Practice/Services exists (`src/modules/practice/`); Doctor-approved knowledge answers are the #30 future issue |
-| §4 | Professional data: full name, specialty, licences (cédulas) and training, validated before publication | Future issue filed | Same knowledge/profile future issue; no professional-profile surface today |
+| §4 | Each Doctor administers content, approves answers and updates agent knowledge without code changes | Implemented | `/settings` (Practice/Services/Schedule/Payments) and `/settings/knowledge` (Doctor-approved verbatim answers rendered without code changes) |
+| §4 | Professional data: full name, specialty, licences (cédulas) and training, validated before publication | Implemented | Doctor-authored verbatim profile and FAQ entries in `/settings/knowledge` with explicit `enabled` publication toggle |
 | §4 | Services: consultations, announcable procedures, in-person/online format, prices, location, attention times | Implemented | Services + Practice settings in `src/modules/practice/` (stable IDs, MXN centavos, Format in `CONTEXT.md`) |
 | §4 | Operation: schedules, appointment duration, advance-payment/rebooking/cancellation policies, non-working days | Implemented | Schedule step in `src/modules/practice/` (working hours, buffers, horizon, cancellation policy text); holidays only as closed days in weekly rules |
 | §4 | Communication: tone of voice, greetings, frequent answers, allowed vocabulary, emoji use | Future issue filed | Knowledge-answers future issue covers Doctor-approved verbatim answers only; tone generation stays `Rejected by rev.2` per ADR-0002 |
@@ -74,8 +74,8 @@ Disposition vocabulary (exactly one per functional row): `Implemented`,
 
 | Brief ref | Requirement (paraphrase) | Disposition | Authority / where |
 |---|---|---|---|
-| §5.1 | Daily, weekly and monthly calendar views optimized for computer and phone | Future issue filed | #28. Dashboard shows attention + upcoming Appointments list, not calendar grid views |
-| §5.1 | Manual creation, editing, cancellation and reprogramming by Doctor/reception | Future issue filed | #28. Manual dashboard creation is issue #2 Out-of-Scope today; Doctor dashboard cancellation/rescheduling of existing Appointments is Implemented in `src/modules/appointments/http.rs`. Creation is #28 |
+| §5.1 | Daily, weekly and monthly calendar views optimized for computer and phone | Implemented | `GET /appointments?view=day\|week\|month&date=YYYY-MM-DD` in `src/modules/appointments/http.rs` and `views.rs` |
+| §5.1 | Manual creation, editing, cancellation and reprogramming by Doctor/reception | Implemented | `POST /appointments/create`, `/appointments/{id}/cancel`, and `/appointments/{id}/reschedule` in `src/modules/appointments/http.rs`, sharing `booking.rs` Hold/History/outbox rules |
 | §5.1 | AI-originated appointments immediately visible in the same calendar | Implemented | Same Appointment store feeds dashboard list/detail (`src/modules/appointments/http.rs`) and Google Booking Calendar sync |
 | §5.1 | Working hours, duration per appointment type, exceptions, vacations, blocks; multiple professionals/sites when scope expands | Implemented | Working-hours/schedule configuration in `src/modules/practice/` + Google Blocking Calendars make time unavailable. Multiple professionals/sites: `Rejected by rev.2` (ADR-0001, one Practice/Doctor) |
 | §5.1 | Transactional control to avoid double booking; temporary retention while confirming | Implemented | Invariant row: Hold exclusion constraint + Hold expiry (`CONTEXT.md` `Hold`) |
@@ -126,13 +126,13 @@ Disposition vocabulary (exactly one per functional row): `Implemented`,
 | Brief ref | Requirement (paraphrase) | Disposition | Authority / where |
 |---|---|---|---|
 | §9 | On confirmation: send appointment data, location and administrative instructions | Implemented | Application-rendered confirmation via the shared outbox (`src/modules/appointments/`) |
-| §9 | 72 hours before: first notice with option to confirm or request change | Future issue filed | #29. No 72h Reminder exists today |
-| §9 | 24 hours before: second reminder per Doctor preferences/policy | Implemented | 24h default Reminder in `src/modules/appointments/timers.rs` |
-| §9 | (Brief extension in current code) optional 2h reminder | Implemented | `reminder_2h_enabled=false` default, `src/modules/appointments/timers.rs`; configurable sequence is the future issue |
+| §9 | 72 hours before: first notice with option to confirm or request change | Implemented | `reminder_72h_enabled` toggle in `/settings?step=schedule` and `Work::Reminder72h` in `src/modules/appointments/timers.rs` |
+| §9 | 24 hours before: second reminder per Doctor preferences/policy | Implemented | `reminder_24h_enabled` (default `true`) in `/settings?step=schedule` and `Work::Reminder24h` in `src/modules/appointments/timers.rs` |
+| §9 | (Brief extension in current code) optional 2h reminder | Implemented | `reminder_2h_enabled` (default `false`) in `/settings?step=schedule` and `Work::Reminder2h` in `src/modules/appointments/timers.rs` |
 | §9 | On reply: update appointment state and notify reception when needed | Implemented | Attendance replies are handled separately from booking replies in `src/modules/appointments/timers.rs` / conversation flow |
 | §9 | On cancellation: release availability and apply defined policy | Implemented | Cancellation frees the Hold and renders the configured cancellation policy (`src/modules/appointments/booking.rs`) |
 | §9 | On silence: escalate when the practice requests human intervention | Implemented | Unanswered/uncertain work surfaces as Attention Items for the Doctor (`CONTEXT.md` `Attention Item`) |
-| §9 | Sequence and frequency personalized per practice; Meta consent/template/window rules | Future issue filed | Sequence configurability is the Step-5 future issue. Meta template/window regime: `Rejected by rev.2` for this deployment (WAHA/GOWS channel, `docs/integrations/waha.md`), with outbound-sending consent as `Operator/legal gate` |
+| §9 | Sequence and frequency personalized per practice; Meta consent/template/window rules | Implemented | Per-Practice 72h/24h/2h sequence toggles in `src/modules/practice/schedule.rs`. Meta template/window regime: `Rejected by rev.2` for this deployment (WAHA/GOWS channel, `docs/integrations/waha.md`), with outbound-sending consent as `Operator/legal gate` |
 
 ## §10 Payments and receipts
 

@@ -17,6 +17,7 @@ pub fn router() -> Router<AppState> {
   Router::new()
     .route(PATH, get(show))
     .route("/settings/google/connect", post(connect))
+    .route("/settings/google/disconnect", post(disconnect))
     .route("/settings/google/callback", get(callback))
     .route("/settings/google/callback/", get(callback))
     .route("/settings/google/calendars", post(select))
@@ -42,6 +43,33 @@ async fn connect(
     }
     Err(error) => failure(error, &session),
   }
+}
+async fn disconnect(
+  State(state): State<AppState>,
+  Extension(session): Extension<DoctorSession>,
+  body: String,
+) -> Response {
+  if !fields(&body, 8192, &[]).is_ok_and(|fields| fields.len() == 1 && fields[0].0 == "csrf_token")
+  {
+    return failure(Error::Invalid, &session);
+  }
+  let (Some(config), Some(client)) = (&state.cfg.google, &state.google) else {
+    return failure(Error::Unavailable, &session);
+  };
+  let (generation, refresh) =
+    match store::disconnect(&state.db, state.clock.as_ref(), config, &session).await {
+      Ok(result) => result,
+      Err(error) => return failure(error, &session),
+    };
+  // Local credentials are already gone; a failed revoke only leaves the notice unconfirmed.
+  if let Some(refresh) = refresh {
+    if let Ok(Ok(())) =
+      tokio::time::timeout(std::time::Duration::from_secs(8), client.revoke(&refresh)).await
+    {
+      let _ = store::revoked(&state.db, generation).await;
+    }
+  }
+  Redirect::to(PATH).into_response()
 }
 fn failure(error: Error, session: &DoctorSession) -> Response {
   let (status,notice) = match error {
@@ -562,7 +590,7 @@ async fn page(state: &AppState, session: &DoctorSession, page_number: u32) -> Re
     None
   };
   let notice = row.and_then(|r| r.try_get::<Option<String>>("", "notice").ok().flatten());
-  let notice=match notice.as_deref() {Some("denied")=>Some("No autorizaste la nueva conexión. La conexión anterior no fue reemplazada."),Some("authorization_failed"|"authorization_incomplete")=>Some("No se completó la nueva autorización con los permisos exactos y credenciales sin conexión. La conexión anterior no fue reemplazada."),Some("connected_reselect")=>Some("Conexión autorizada. Selecciona de nuevo los calendarios; esta autorización puede pertenecer a otra cuenta."),Some("selection_saved")=>Some("Selección guardada. Los permisos sobre eventos y Google Meet todavía requieren una comprobación."),Some("refresh_uncertain")=>Some("No se pudo confirmar la renovación de credenciales. Vuelve a conectar Google; no se afirma que la autorización haya sido revocada."),_=>None};
+  let notice=match notice.as_deref() {Some("denied")=>Some("No autorizaste la nueva conexión. La conexión anterior no fue reemplazada."),Some("authorization_failed"|"authorization_incomplete")=>Some("No se completó la nueva autorización con los permisos exactos y credenciales sin conexión. Vuelve a conectar y, en la pantalla de Google, marca todas las casillas de permisos de Google Calendar. La conexión anterior no fue reemplazada."),Some("connected_reselect")=>Some("Conexión autorizada. Selecciona de nuevo los calendarios; esta autorización puede pertenecer a otra cuenta."),Some("selection_saved")=>Some("Selección guardada. Los permisos sobre eventos y Google Meet todavía requieren una comprobación."),Some("refresh_uncertain")=>Some("No se pudo confirmar la renovación de credenciales. Vuelve a conectar Google; no se afirma que la autorización haya sido revocada."),Some("disconnected")=>Some("Google desconectado. Se borraron las credenciales guardadas y Google confirmó la revocación del acceso. Los eventos ya creados en tu calendario no se borraron."),Some("disconnected_revoke_unconfirmed")=>Some("Google desconectado. Se borraron las credenciales guardadas, pero Google no confirmó la revocación del acceso. Retira el acceso en myaccount.google.com/permissions. Los eventos ya creados en tu calendario no se borraron."),_=>None};
   let load_error = result.is_err()
     || stale
     || decryption_failed

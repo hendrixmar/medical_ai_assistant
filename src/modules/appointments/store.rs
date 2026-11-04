@@ -137,6 +137,7 @@ pub async fn cancel(
     vec![id.into(), now.into(), calendar_pending.into(), revision.into()],
   ))
   .await?;
+  crate::modules::mercado_pago::store::recheck_preferences(tx, id, now).await?;
   tx.execute(sql(
     "UPDATE appointment_holds SET active=false WHERE appointment_id=$1 AND active",
     vec![id.into()],
