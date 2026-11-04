@@ -48,17 +48,26 @@ struct State {
 
 pub(crate) enum Preflight {
   StartIntent(parser::Preference),
+  IdleDecision(parser::IdleDecision),
+  IdleKnowledge {
+    entry_id: Uuid,
+  },
   Agenda(NaiveDate),
   Formats {
     token: Token,
     video_enabled: bool,
+    decision: Option<parser::ServiceDecision>,
   },
   Format {
     token: Token,
+    format: Format,
     video_enabled: bool,
     preference: Option<parser::Preference>,
     timezone: Option<String>,
     offers: Option<Offers>,
+  },
+  FormatFollowup {
+    token: Token,
   },
   Date {
     token: Token,
@@ -70,6 +79,13 @@ pub(crate) enum Preflight {
     token: Token,
     starts_at: Option<i64>,
     result: Option<BookingPrepared>,
+  },
+  CandidateSelection {
+    token: Token,
+    index: usize,
+  },
+  StageFollowup {
+    token: Token,
   },
 }
 
@@ -89,13 +105,50 @@ pub(crate) async fn prepare(
     None
   };
   let Some(state) = state.filter(|state| state.token.stage != "idle") else {
-    let Some(today) = today(db, now).await? else {
+    let trimmed = text.trim();
+    if matches!(trimmed, "1" | "2" | "3" | "4" | "5")
+      || trimmed.eq_ignore_ascii_case("VOLVER")
+      || trimmed.eq_ignore_ascii_case("MENU")
+      || trimmed.eq_ignore_ascii_case("DOCTOR")
+      || attendance_reply(text).is_some()
+    {
       return Ok(None);
-    };
+    }
+    let entries = practice::store::enabled_knowledge_entries(&db.conn)
+      .await
+      .unwrap_or_default();
+    let knowledge_pairs: Vec<(String, String)> = entries
+      .iter()
+      .map(|entry| (entry.topic.clone(), entry.question.clone()))
+      .collect();
+    let today = today(db, now).await?;
+    if today.is_none() {
+      if let Some(parser::IdleDecision::Knowledge(index)) = parser::decide_idle(
+        cfg,
+        text,
+        NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+        &knowledge_pairs,
+      )
+      .await
+      {
+        if let Some(entry) = entries.get(index) {
+          return Ok(Some(Preflight::IdleKnowledge { entry_id: entry.id }));
+        }
+      }
+      return Ok(None);
+    }
+    let today = today.unwrap();
     return Ok(
-      parser::interpret(cfg, text, today)
-        .await
-        .map(Preflight::StartIntent),
+      match parser::decide_idle(cfg, text, today, &knowledge_pairs).await {
+        Some(parser::IdleDecision::Schedule(Some(preference))) => {
+          Some(Preflight::StartIntent(preference))
+        }
+        Some(parser::IdleDecision::Knowledge(index)) => entries
+          .get(index)
+          .map(|entry| Preflight::IdleKnowledge { entry_id: entry.id }),
+        Some(decision) => Some(Preflight::IdleDecision(decision)),
+        None => None,
+      },
     );
   };
   let Some(contact) = contact else {
@@ -103,13 +156,40 @@ pub(crate) async fn prepare(
   };
   let token = state.token;
   match token.stage.as_str() {
-    "booking_service" => Ok(Some(Preflight::Formats {
-      token,
-      video_enabled: availability::video_enabled(db).await?,
-    })),
+    "booking_service" => {
+      let offered = token.data["services"].as_array();
+      let deterministic = offered
+        .and_then(|rows| select_offered_service(rows, text, None))
+        .is_some()
+        || is_navigation_keyword(text);
+      let decision = if deterministic {
+        None
+      } else {
+        let names: Vec<String> = offered
+          .into_iter()
+          .flatten()
+          .filter_map(|row| row["name"].as_str().map(str::to_owned))
+          .collect();
+        parser::decide_service(cfg, text, &names).await
+      };
+      Ok(Some(Preflight::Formats {
+        token,
+        video_enabled: availability::video_enabled(db).await?,
+        decision,
+      }))
+    }
     "booking_format" => {
-      let Some(format) = parse_format(text) else {
-        return Ok(None);
+      let format = match parse_format(text) {
+        Some(format) => format,
+        None if is_navigation_keyword(text) => return Ok(None),
+        None => match parser::decide_format(cfg, text).await {
+          Some(parser::FormatDecision::InPerson) => Format::InPerson,
+          Some(parser::FormatDecision::Video) => Format::Video,
+          Some(parser::FormatDecision::Followup) => {
+            return Ok(Some(Preflight::FormatFollowup { token }));
+          }
+          None => return Ok(None),
+        },
       };
       let enabled = format != Format::Video || availability::video_enabled(db).await?;
       let preferred = saved_preference(&token.data);
@@ -135,6 +215,7 @@ pub(crate) async fn prepare(
       };
       Ok(Some(Preflight::Format {
         token,
+        format,
         video_enabled: enabled,
         preference: preferred,
         timezone,
@@ -172,7 +253,8 @@ pub(crate) async fn prepare(
       }))
     }
     "booking_choice" | "reschedule_choice" | "late_recovery_choice" => {
-      let Some(starts_at) = offered_start(&token.data, text) else {
+      let mut resolved_start = offered_start(&token.data, text);
+      if resolved_start.is_none() {
         let format = state_format(&token.data);
         let preference = parse_date_preference(db, cfg, text, format, now).await?;
         if let Some(preference) = preference {
@@ -200,6 +282,30 @@ pub(crate) async fn prepare(
             offers,
           }));
         }
+        if !is_navigation_keyword(text) {
+          let timezone = token.data["timezone"].as_str().unwrap_or("UTC");
+          let labels: Vec<String> = token.data["choices"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_i64)
+            .map(|starts_at| store::local_time(starts_at, timezone))
+            .collect();
+          match parser::decide_option(cfg, &token.stage, text, &labels).await {
+            Some(parser::ServiceDecision::Select(index)) => {
+              resolved_start = token.data["choices"]
+                .as_array()
+                .and_then(|rows| rows.get(index))
+                .and_then(Value::as_i64);
+            }
+            Some(parser::ServiceDecision::Followup) => {
+              return Ok(Some(Preflight::StageFollowup { token }));
+            }
+            None => {}
+          }
+        }
+      }
+      let Some(starts_at) = resolved_start else {
         return Ok(Some(Preflight::Selection {
           token,
           starts_at: None,
@@ -222,6 +328,28 @@ pub(crate) async fn prepare(
         result: Some(result),
       }))
     }
+    "reschedule_select" | "cancel_select" | "attendance_select" | "receipt_selection" => {
+      let key = if token.stage == "receipt_selection" {
+        "candidates"
+      } else {
+        "appointments"
+      };
+      let rows = token.data[key].as_array();
+      if rows.and_then(|rows| numbered_json(rows, text)).is_some() || is_navigation_keyword(text) {
+        return Ok(None);
+      }
+      let count = rows.map_or(0, Vec::len);
+      let labels: Vec<String> = (1..=count).map(|idx| format!("Opción {idx}")).collect();
+      Ok(
+        match parser::decide_option(cfg, &token.stage, text, &labels).await {
+          Some(parser::ServiceDecision::Select(index)) => {
+            Some(Preflight::CandidateSelection { token, index })
+          }
+          Some(parser::ServiceDecision::Followup) => Some(Preflight::StageFollowup { token }),
+          None => None,
+        },
+      )
+    }
     _ => Ok(None),
   }
 }
@@ -238,16 +366,21 @@ pub(crate) async fn handle(
   let state = read_state(tx, contact, true).await?;
   let current = state.as_ref().map(|state| &state.token);
   let matching = match preflight.as_ref() {
-    Some(Preflight::StartIntent(_)) => current.is_none_or(|token| token.stage == "idle"),
+    Some(Preflight::StartIntent(_))
+    | Some(Preflight::IdleDecision(_))
+    | Some(Preflight::IdleKnowledge { .. }) => current.is_none_or(|token| token.stage == "idle"),
     Some(Preflight::Formats { token, .. })
     | Some(Preflight::Format { token, .. })
+    | Some(Preflight::FormatFollowup { token })
     | Some(Preflight::Date { token, .. })
-    | Some(Preflight::Selection { token, .. }) => current == Some(token),
+    | Some(Preflight::Selection { token, .. })
+    | Some(Preflight::CandidateSelection { token, .. })
+    | Some(Preflight::StageFollowup { token }) => current == Some(token),
     Some(Preflight::Agenda(_)) | None => false,
   };
   let mut preflight = if matching { preflight } else { None };
   if current.is_none_or(|token| token.stage == "idle") {
-    if let Some(Preflight::StartIntent(preference)) = preflight.take() {
+    if let Some(Preflight::StartIntent(preference)) = preflight {
       return begin_booking(turn, Some(preference)).await;
     }
   }
@@ -299,14 +432,23 @@ pub(crate) async fn handle(
       return send(turn, None, "La cita cambió; no modifiqué sus registros ni reservé otro horario. Escriba 2 para consultar las opciones actuales o DOCTOR para atención personal.").await;
     }
   }
+  if let Some(Preflight::StageFollowup { token }) = preflight.as_ref() {
+    if current == Some(token) {
+      return create_followup(turn, appointment_id(&data)).await;
+    }
+  }
+  let candidate_index = match preflight.as_ref() {
+    Some(Preflight::CandidateSelection { token, index }) if current == Some(token) => Some(*index),
+    _ => None,
+  };
   if stage == "receipt_selection" {
-    return handle_receipt_selection(turn, &data, text).await;
+    return handle_receipt_selection(turn, &data, text, candidate_index).await;
   }
   if stage == "attendance_select" {
-    return handle_attendance_choice(turn, &data, text).await;
+    return handle_attendance_choice(turn, &data, text, candidate_index).await;
   }
   if stage == "cancel_select" {
-    return handle_cancel_choice(turn, &data, text).await;
+    return handle_cancel_choice(turn, &data, text, candidate_index).await;
   }
   if stage == "cancel_confirm" {
     return handle_cancel_confirmation(turn, &data, text).await;
@@ -363,8 +505,14 @@ pub(crate) async fn handle(
     return Ok(());
   }
   if stage == "booking_format" {
+    if let Some(Preflight::FormatFollowup { token }) = preflight.as_ref() {
+      if current == Some(token) {
+        return create_followup(turn, None).await;
+      }
+    }
     if let Some(Preflight::Format {
       token,
+      format,
       video_enabled,
       preference,
       timezone,
@@ -375,7 +523,7 @@ pub(crate) async fn handle(
         return handle_format(
           turn,
           &data,
-          text,
+          format,
           video_enabled,
           preference,
           timezone,
@@ -390,20 +538,28 @@ pub(crate) async fn handle(
     return Ok(());
   }
   if stage == "booking_service" {
-    let video_enabled = match preflight.take() {
+    let (video_enabled, decision) = match preflight.take() {
       Some(Preflight::Formats {
         token,
         video_enabled,
-      }) if current == Some(&token) => video_enabled,
-      _ => false,
+        decision,
+      }) if current == Some(&token) => (video_enabled, decision),
+      _ => (false, None),
     };
-    return handle_service(turn, &data, text, video_enabled).await;
+    if decision == Some(parser::ServiceDecision::Followup) {
+      return create_followup(turn, None).await;
+    }
+    let selected_index = match decision {
+      Some(parser::ServiceDecision::Select(index)) => Some(index),
+      _ => None,
+    };
+    return handle_service(turn, &data, text, video_enabled, selected_index).await;
   }
   if stage == "booking_patient" {
     return handle_patient(turn, &data, text).await;
   }
   if stage == "reschedule_select" {
-    return handle_reschedule_choice(turn, &data, text).await;
+    return handle_reschedule_choice(turn, &data, text, candidate_index).await;
   }
   if stage == "idle" {
     if let Ok(option) = text.trim().parse::<u8>() {
@@ -423,6 +579,41 @@ pub(crate) async fn handle(
     }
     if let Some(attendance) = attendance_reply(text) {
       return begin_attendance(turn, attendance).await;
+    }
+    if let Some(Preflight::IdleKnowledge { entry_id }) = preflight.as_ref() {
+      let row = tx
+        .query_one(sql(
+          "SELECT answer FROM knowledge_entries WHERE id=$1 AND enabled=true",
+          vec![(*entry_id).into()],
+        ))
+        .await?;
+      if let Some(row) = row {
+        let answer: String = row.try_get("", "answer")?;
+        return send(turn, None, &format!("{answer}\n\n{MENU}")).await;
+      }
+    }
+    if let Some(Preflight::IdleDecision(decision)) = preflight.take() {
+      match decision {
+        parser::IdleDecision::Schedule(preference) => {
+          return begin_booking(turn, preference).await;
+        }
+        parser::IdleDecision::Reschedule => return begin_reschedule(turn).await,
+        parser::IdleDecision::Cancel => return begin_cancellation(turn).await,
+        parser::IdleDecision::ReceiptHelp => {
+          send(
+            turn,
+            None,
+            "Para un pago pendiente, envíe el comprobante en este chat. El comprobante no confirma ni verifica el pago por sí solo.",
+          )
+          .await?;
+          return Ok(());
+        }
+        parser::IdleDecision::Followup => return create_followup(turn, None).await,
+        parser::IdleDecision::Attendance(confirmed) => {
+          return begin_attendance(turn, confirmed).await;
+        }
+        parser::IdleDecision::Knowledge(_) => {}
+      }
     }
     send(
       turn,
@@ -451,7 +642,7 @@ async fn parse_date_preference(
   if let Some(preference) = parser::parse_simple(text, today) {
     return Ok(Some(preference));
   }
-  if format == Some(Format::InPerson) {
+  if format == Some(Format::InPerson) || cfg.inception_api_key.is_some() {
     return Ok(parser::interpret_date(cfg, text, today).await);
   }
   Ok(None)
@@ -847,20 +1038,20 @@ async fn services<C: ConnectionTrait>(conn: &C) -> Result<Vec<practice::model::S
     .collect()
 }
 
-async fn handle_service(
-  turn: &Turn<'_>,
-  data: &Value,
+fn is_navigation_keyword(text: &str) -> bool {
+  let trimmed = text.trim();
+  trimmed == "5"
+    || trimmed.eq_ignore_ascii_case("VOLVER")
+    || trimmed.eq_ignore_ascii_case("MENU")
+    || trimmed.eq_ignore_ascii_case("DOCTOR")
+}
+
+fn select_offered_service<'a>(
+  offered: &'a [Value],
   text: &str,
-  video_enabled: bool,
-) -> Result<(), DbErr> {
-  let Turn {
-    tx, contact, now, ..
-  } = *turn;
-  let Some(offered) = data["services"].as_array() else {
-    idle(tx, contact, now).await?;
-    return send(turn, None, &format!("Volvamos al menú:\n{MENU}")).await;
-  };
-  let selected = text
+  decision_index: Option<usize>,
+) -> Option<&'a Value> {
+  text
     .trim()
     .parse::<usize>()
     .ok()
@@ -877,7 +1068,25 @@ async fn handle_service(
         })
         .collect::<Vec<_>>();
       (matches.len() == 1).then(|| matches[0])
-    });
+    })
+    .or_else(|| decision_index.and_then(|index| offered.get(index)))
+}
+
+async fn handle_service(
+  turn: &Turn<'_>,
+  data: &Value,
+  text: &str,
+  video_enabled: bool,
+  decision_index: Option<usize>,
+) -> Result<(), DbErr> {
+  let Turn {
+    tx, contact, now, ..
+  } = *turn;
+  let Some(offered) = data["services"].as_array() else {
+    idle(tx, contact, now).await?;
+    return send(turn, None, &format!("Volvamos al menú:\n{MENU}")).await;
+  };
+  let selected = select_offered_service(offered, text, decision_index);
   let Some(selected) = selected else {
     send(
       turn,
@@ -923,7 +1132,7 @@ async fn handle_service(
 async fn handle_format(
   turn: &Turn<'_>,
   data: &Value,
-  text: &str,
+  format: Format,
   video_enabled: bool,
   preference: Option<parser::Preference>,
   timezone: Option<String>,
@@ -932,15 +1141,6 @@ async fn handle_format(
   let Turn {
     tx, contact, now, ..
   } = *turn;
-  let Some(format) = parse_format(text) else {
-    send(
-      turn,
-      None,
-      "Elija 1 para presencial o 2 para video, cuando esa opción esté habilitada.",
-    )
-    .await?;
-    return Ok(());
-  };
   if format == Format::Video && !video_enabled {
     send(turn, None, "No puedo ofrecer horarios de video porque ese formato no está habilitado. Elija 1 para presencial o escriba VOLVER.").await?;
     return Ok(());
@@ -1173,12 +1373,19 @@ async fn begin_reschedule(turn: &Turn<'_>) -> Result<(), DbErr> {
   send(turn, None, &format!("Seleccione la cita que desea cambiar. La cita original se conserva mientras elige un nuevo horario:\n{}", render_appointment_options(&appointments))).await
 }
 
-async fn handle_reschedule_choice(turn: &Turn<'_>, data: &Value, text: &str) -> Result<(), DbErr> {
+async fn handle_reschedule_choice(
+  turn: &Turn<'_>,
+  data: &Value,
+  text: &str,
+  decision_index: Option<usize>,
+) -> Result<(), DbErr> {
   let Turn {
     tx, contact, now, ..
   } = *turn;
   let candidates = data["appointments"].as_array();
-  let Some(selected) = candidates.and_then(|rows| numbered_json(rows, text)) else {
+  let Some(selected) =
+    candidates.and_then(|rows| numbered_json_or_decision(rows, text, decision_index))
+  else {
     send(turn, None, "Responda con el número de una cita mostrada.").await?;
     return Ok(());
   };
@@ -1245,12 +1452,19 @@ async fn begin_cancellation(turn: &Turn<'_>) -> Result<(), DbErr> {
   .await
 }
 
-async fn handle_cancel_choice(turn: &Turn<'_>, data: &Value, text: &str) -> Result<(), DbErr> {
+async fn handle_cancel_choice(
+  turn: &Turn<'_>,
+  data: &Value,
+  text: &str,
+  decision_index: Option<usize>,
+) -> Result<(), DbErr> {
   let Turn {
     tx, contact, now, ..
   } = *turn;
   let candidates = data["appointments"].as_array();
-  let Some(selected) = candidates.and_then(|rows| numbered_json(rows, text)) else {
+  let Some(selected) =
+    candidates.and_then(|rows| numbered_json_or_decision(rows, text, decision_index))
+  else {
     send(turn, None, "Responda con el número de una cita mostrada.").await?;
     return Ok(());
   };
@@ -1402,6 +1616,13 @@ fn render_appointment_options(appointments: &[Appointment]) -> String {
 fn numbered_json<'a>(rows: &'a [Value], text: &str) -> Option<&'a Value> {
   let index = text.trim().parse::<usize>().ok()?.checked_sub(1)?;
   rows.get(index)
+}
+fn numbered_json_or_decision<'a>(
+  rows: &'a [Value],
+  text: &str,
+  decision_index: Option<usize>,
+) -> Option<&'a Value> {
+  numbered_json(rows, text).or_else(|| decision_index.and_then(|index| rows.get(index)))
 }
 
 fn format_name(value: &str) -> &'static str {
@@ -1575,12 +1796,19 @@ async fn begin_attendance(turn: &Turn<'_>, reply: bool) -> Result<(), DbErr> {
   .await
 }
 
-async fn handle_attendance_choice(turn: &Turn<'_>, data: &Value, text: &str) -> Result<(), DbErr> {
+async fn handle_attendance_choice(
+  turn: &Turn<'_>,
+  data: &Value,
+  text: &str,
+  decision_index: Option<usize>,
+) -> Result<(), DbErr> {
   let Turn {
     tx, contact, now, ..
   } = *turn;
   let candidates = data["appointments"].as_array();
-  let Some(selected) = candidates.and_then(|rows| numbered_json(rows, text)) else {
+  let Some(selected) =
+    candidates.and_then(|rows| numbered_json_or_decision(rows, text, decision_index))
+  else {
     send(
       turn,
       None,
@@ -1660,7 +1888,12 @@ fn attendance_reply(text: &str) -> Option<bool> {
   }
 }
 
-async fn handle_receipt_selection(turn: &Turn<'_>, data: &Value, text: &str) -> Result<(), DbErr> {
+async fn handle_receipt_selection(
+  turn: &Turn<'_>,
+  data: &Value,
+  text: &str,
+  decision_index: Option<usize>,
+) -> Result<(), DbErr> {
   let Turn {
     tx,
     contact,
@@ -1671,7 +1904,7 @@ async fn handle_receipt_selection(turn: &Turn<'_>, data: &Value, text: &str) -> 
   let Some(candidates) = data["candidates"].as_array() else {
     return Ok(());
   };
-  let Some(selected) = numbered_json(candidates, text) else {
+  let Some(selected) = numbered_json_or_decision(candidates, text, decision_index) else {
     send(
       turn,
       None,

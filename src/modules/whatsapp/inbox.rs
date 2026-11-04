@@ -31,7 +31,7 @@ pub(super) fn authenticate(headers: &HeaderMap, raw: &[u8], key: &str) -> bool {
     return false;
   }
   let mut decoded = [0u8; 64];
-  for (i, pair) in signature.as_bytes().chunks_exact(2).enumerate() {
+  for (i, pair) in signature.as_bytes().as_chunks::<2>().0.iter().enumerate() {
     let digit = |b: u8| if b <= b'9' { b - b'0' } else { b - b'a' + 10 };
     decoded[i] = digit(pair[0]) * 16 + digit(pair[1]);
   }

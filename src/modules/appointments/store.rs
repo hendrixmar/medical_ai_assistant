@@ -138,6 +138,11 @@ pub async fn cancel(
   ))
   .await?;
   tx.execute(sql(
+    "UPDATE stripe_payment_links SET next_check_at=$2 WHERE appointment_id=$1 AND deactivated_at IS NULL",
+    vec![id.into(), now.into()],
+  ))
+  .await?;
+  tx.execute(sql(
     "UPDATE appointment_holds SET active=false WHERE appointment_id=$1 AND active",
     vec![id.into()],
   ))

@@ -45,6 +45,7 @@ pub struct Preflight {
   target: Target,
   practice_snapshot: String,
   service_snapshot: Option<ServiceSnapshot>,
+  stripe_configured: bool,
 }
 
 pub enum Commit {
@@ -213,6 +214,7 @@ pub async fn prepare_selection(
     target,
     practice_snapshot,
     service_snapshot,
+    stripe_configured: cfg.stripe.is_some(),
   }))
 }
 
@@ -232,8 +234,29 @@ pub(crate) async fn open_limit_reached<C: ConnectionTrait>(
 /// Commits the state change, Hold, History, jobs, message association and rendered outbox in one savepoint.
 pub async fn commit_selection(
   tx: &DatabaseTransaction,
-  mut preflight: Preflight,
+  preflight: Preflight,
   inbox: &str,
+  patient_name: Option<&str>,
+  origin: &str,
+  now: i64,
+) -> Result<Commit, DbErr> {
+  commit_selection_for_actor(
+    tx,
+    preflight,
+    Some(inbox),
+    "Contact",
+    patient_name,
+    origin,
+    now,
+  )
+  .await
+}
+
+pub async fn commit_selection_for_actor(
+  tx: &DatabaseTransaction,
+  mut preflight: Preflight,
+  inbox: Option<&str>,
+  actor: &str,
   patient_name: Option<&str>,
   origin: &str,
   now: i64,
@@ -434,7 +457,7 @@ pub async fn commit_selection(
     store::history(
       &work,
       id,
-      "Contact",
+      actor,
       if status == "requested" {
         "appointment_requested"
       } else if request.format == Format::Video {
@@ -474,48 +497,65 @@ pub async fn commit_selection(
       )
       .await?;
     }
-    work.execute(sql(
-      "INSERT INTO message_appointments(inbox_message_id,appointment_id) VALUES ($1,$2) ON CONFLICT DO NOTHING",
-      vec![inbox.into(), id.into()],
-    )).await?;
-    set_conversation_idle(&work, request.contact, now).await?;
+    if let Some(inbox) = inbox {
+      work.execute(sql(
+        "INSERT INTO message_appointments(inbox_message_id,appointment_id) VALUES ($1,$2) ON CONFLICT DO NOTHING",
+        vec![inbox.into(), id.into()],
+      )).await?;
+      set_conversation_idle(&work, request.contact, now).await?;
+    }
+    let can_enqueue = inbox.is_some() || has_trusted_inbox(&work, request.contact).await?;
     if request.format == Format::Video {
-      enqueue_payment_instructions(
-        &work,
-        PaymentInstructions {
-          appointment: id,
+      let deadline = preflight
+        .choice
+        .receipt_deadline
+        .ok_or_else(|| DbErr::Custom("Receipt deadline unavailable".into()))?;
+      if can_enqueue {
+        enqueue_payment_instructions(
+          &work,
+          PaymentInstructions {
+            appointment: id,
+            revision,
+            contact: request.contact,
+            deadline,
+            price_centavos: service.price_centavos,
+            bank: practice
+              .bank
+              .as_deref()
+              .map(str::trim)
+              .ok_or_else(|| DbErr::Custom("Bank snapshot unavailable".into()))?,
+            beneficiary: practice
+              .beneficiary
+              .as_deref()
+              .map(str::trim)
+              .ok_or_else(|| DbErr::Custom("Beneficiary snapshot unavailable".into()))?,
+            clabe: practice
+              .clabe
+              .as_deref()
+              .map(str::trim)
+              .ok_or_else(|| DbErr::Custom("CLABE snapshot unavailable".into()))?,
+            reference: reference
+              .as_deref()
+              .ok_or_else(|| DbErr::Custom("Payment reference unavailable".into()))?,
+            timezone: details.timezone.name(),
+          },
+          origin,
+          now,
+        )
+        .await?;
+      }
+      if preflight.stripe_configured {
+        crate::modules::stripe::store::schedule_link(
+          &work,
+          id,
           revision,
-          contact: request.contact,
-          deadline: preflight
-            .choice
-            .receipt_deadline
-            .ok_or_else(|| DbErr::Custom("Receipt deadline unavailable".into()))?,
-          price_centavos: service.price_centavos,
-          bank: practice
-            .bank
-            .as_deref()
-            .map(str::trim)
-            .ok_or_else(|| DbErr::Custom("Bank snapshot unavailable".into()))?,
-          beneficiary: practice
-            .beneficiary
-            .as_deref()
-            .map(str::trim)
-            .ok_or_else(|| DbErr::Custom("Beneficiary snapshot unavailable".into()))?,
-          clabe: practice
-            .clabe
-            .as_deref()
-            .map(str::trim)
-            .ok_or_else(|| DbErr::Custom("CLABE snapshot unavailable".into()))?,
-          reference: reference
-            .as_deref()
-            .ok_or_else(|| DbErr::Custom("Payment reference unavailable".into()))?,
-          timezone: details.timezone.name(),
-        },
-        origin,
-        now,
-      )
-      .await?;
-    } else {
+          service.price_centavos,
+          deadline,
+          now,
+        )
+        .await?;
+      }
+    } else if can_enqueue {
       let local = store::local_time(preflight.choice.starts_at, details.timezone.name());
       let text = if status == "requested" {
         format!("Registré su solicitud para el {local}, pero todavía no está confirmada ni puedo prometer disponibilidad. Le avisaré cuando compruebe Google Calendar.")
@@ -625,7 +665,7 @@ pub async fn commit_selection(
   store::history(
     &work,
     current.id,
-    "Contact",
+    actor,
     if recovering {
       "late_receipt_recovery_rescheduled"
     } else {
@@ -662,38 +702,44 @@ pub async fn commit_selection(
     )
     .await?;
   }
-  work.execute(sql(
-    "INSERT INTO message_appointments(inbox_message_id,appointment_id) VALUES ($1,$2) ON CONFLICT DO NOTHING",
-    vec![inbox.into(), current.id.into()],
-  )).await?;
-  set_conversation_idle(&work, request.contact, now).await?;
-  let local = store::local_time(preflight.choice.starts_at, details.timezone.name());
-  let text = if event_id.is_some() {
-    format!("Su solicitud de cambio para el {local} está pendiente de actualización en Google Calendar. Aún no puedo confirmar el nuevo horario.")
-  } else {
-    let state = match current.payment.as_str() {
-      "awaiting_receipt" => "Su pago sigue pendiente de comprobante",
-      "under_review" => "Su comprobante sigue en revisión",
-      "verified" => "Su pago sigue verificado",
-      "rejected" => "El estado de pago sigue como rechazado",
-      _ => "La cita sigue sin requerir pago",
+  if let Some(inbox) = inbox {
+    work.execute(sql(
+      "INSERT INTO message_appointments(inbox_message_id,appointment_id) VALUES ($1,$2) ON CONFLICT DO NOTHING",
+      vec![inbox.into(), current.id.into()],
+    )).await?;
+    set_conversation_idle(&work, request.contact, now).await?;
+  }
+  if inbox.is_some() || has_trusted_inbox(&work, request.contact).await? {
+    let local = store::local_time(preflight.choice.starts_at, details.timezone.name());
+    let text = if event_id.is_some() {
+      format!("Su solicitud de cambio para el {local} está pendiente de actualización en Google Calendar. Aún no puedo confirmar el nuevo horario.")
+    } else {
+      let state = match current.payment.as_str() {
+        "awaiting_receipt" => "Su pago sigue pendiente de comprobante",
+        "under_review" => "Su comprobante sigue en revisión",
+        "verified" => "Su pago sigue verificado",
+        "rejected" => "El estado de pago sigue como rechazado",
+        _ => "La cita sigue sin requerir pago",
+      };
+      format!(
+        "Actualicé la fecha de su cita al {local}. {state}; la fecha límite de pago no cambia."
+      )
     };
-    format!("Actualicé la fecha de su cita al {local}. {state}; la fecha límite de pago no cambia.")
-  };
-  enqueue_text(
-    &work,
-    Message {
-      contact: request.contact,
-      appointment: Some(current.id),
-      key: &format!("appointment:{}:{}:{}", current.id, revision, "rescheduled"),
-      text: &text,
-      purpose: "status",
-      revision: Some(revision),
-    },
-    origin,
-    now,
-  )
-  .await?;
+    enqueue_text(
+      &work,
+      Message {
+        contact: request.contact,
+        appointment: Some(current.id),
+        key: &format!("appointment:{}:{}:{}", current.id, revision, "rescheduled"),
+        text: &text,
+        purpose: "status",
+        revision: Some(revision),
+      },
+      origin,
+      now,
+    )
+    .await?;
+  }
   work.commit().await?;
   Ok(Commit::Applied {
     appointment_id: current.id,
@@ -961,30 +1007,26 @@ pub(crate) async fn schedule_reminders(
   revision: i64,
   starts_at: i64,
   now: i64,
-  reminder_2h_enabled: bool,
+  reminders: (bool, bool, bool),
 ) -> Result<(), DbErr> {
-  let due = starts_at.saturating_sub(86_400_000);
-  if due > now {
-    store::job(
-      tx,
-      appointment,
-      "reminders",
-      due,
-      &format!("{appointment}:{revision}:reminders:24h:{starts_at}"),
-    )
-    .await?;
-  }
-  if reminder_2h_enabled {
-    let due = starts_at.saturating_sub(7_200_000);
-    if due > now {
-      store::job(
-        tx,
-        appointment,
-        "reminders",
-        due,
-        &format!("{appointment}:{revision}:reminders:2h:{starts_at}"),
-      )
-      .await?;
+  let (reminder_72h_enabled, reminder_24h_enabled, reminder_2h_enabled) = reminders;
+  for (enabled, offset, label) in [
+    (reminder_72h_enabled, 259_200_000_i64, "72h"),
+    (reminder_24h_enabled, 86_400_000_i64, "24h"),
+    (reminder_2h_enabled, 7_200_000_i64, "2h"),
+  ] {
+    if enabled {
+      let due = starts_at.saturating_sub(offset);
+      if due > now {
+        store::job(
+          tx,
+          appointment,
+          "reminders",
+          due,
+          &format!("{appointment}:{revision}:reminders:{label}:{starts_at}"),
+        )
+        .await?;
+      }
     }
   }
   Ok(())
@@ -1000,6 +1042,16 @@ async fn set_conversation_idle(
     vec![contact.into(), now.into()],
   )).await?;
   Ok(())
+}
+async fn has_trusted_inbox(tx: &DatabaseTransaction, contact: Uuid) -> Result<bool, DbErr> {
+  let row = tx
+    .query_one(sql(
+      "SELECT EXISTS (SELECT 1 FROM inbox_messages WHERE contact_id=$1 AND EXISTS (SELECT 1 FROM contact_aliases WHERE contact_id=$1 AND jid=original_chat_identity)) AS present",
+      vec![contact.into()],
+    ))
+    .await?
+    .ok_or_else(|| DbErr::Custom("Trusted inbox check failed".into()))?;
+  row.try_get("", "present")
 }
 
 pub(crate) struct PaymentInstructions<'a> {

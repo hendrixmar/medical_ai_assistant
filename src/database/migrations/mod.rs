@@ -11,6 +11,8 @@ mod m202610160002_receipts;
 mod m202610160003_provider_recovery;
 mod m202610160004_application_outbox;
 mod m202610200001_doctor_number_fingerprint_key;
+mod m202610240001_stripe_connect;
+mod m202610240002_practice_and_agenda_extensions;
 
 pub struct Migrator;
 
@@ -30,6 +32,8 @@ impl MigratorTrait for Migrator {
       Box::new(m202610160003_provider_recovery::Migration),
       Box::new(m202610160004_application_outbox::Migration),
       Box::new(m202610200001_doctor_number_fingerprint_key::Migration),
+      Box::new(m202610240001_stripe_connect::Migration),
+      Box::new(m202610240002_practice_and_agenda_extensions::Migration),
     ]
   }
 }

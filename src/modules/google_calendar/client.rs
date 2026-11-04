@@ -12,6 +12,7 @@ pub const SCOPES: [&str; 3] = [
 pub struct Client {
   http: reqwest::Client,
   token: Url,
+  revoke: Url,
   pub(super) calendar: Url,
 }
 #[derive(Debug, PartialEq, Eq)]
@@ -68,9 +69,13 @@ impl Client {
       .map_err(|_| "Invalid Google endpoint")?;
     #[cfg(test)]
     let (token, calendar) = _config.test_endpoints.clone().unwrap_or((token, calendar));
+    let revoke = token
+      .join("revoke")
+      .map_err(|_| "Invalid Google endpoint")?;
     Ok(Self {
       http,
       token,
+      revoke,
       calendar,
     })
   }
@@ -171,6 +176,27 @@ impl Client {
       )
       .await?;
     grant(reply, Some(refresh), now)
+  }
+  /// Revoking the refresh token also revokes the grant. Google answers `invalid_token`
+  /// for an already revoked or expired token, which leaves nothing to revoke.
+  pub(super) async fn revoke(&self, refresh: &str) -> Result<(), Failure> {
+    let reply = self
+      .bounded(
+        self
+          .http
+          .post(self.revoke.clone())
+          .form(&[("token", refresh)]),
+        64 * 1024,
+      )
+      .await?;
+    let invalid_token = reply.status == StatusCode::BAD_REQUEST
+      && serde_json::from_slice::<serde_json::Value>(&reply.bytes)
+        .is_ok_and(|body| body["error"] == "invalid_token");
+    if reply.status.is_success() || invalid_token {
+      Ok(())
+    } else {
+      Err(classify(&reply))
+    }
   }
   pub(super) fn request(
     &self,

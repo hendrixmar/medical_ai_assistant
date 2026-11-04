@@ -80,8 +80,8 @@ pub fn settings(view: SettingsView<'_>) -> String {
 {content}
 <section class="dashboard-section connections-note" aria-labelledby="connections-title">
 <h2 id="connections-title">Conexiones</h2>
-<ul><li><a class="text-link" href="/settings/whatsapp">Conexión de WhatsApp del consultorio</a></li><li><a class="text-link" href="/settings/doctor-number">Verificar tu número de WhatsApp</a></li><li><a class="text-link" href="/settings/google">Conexión de Google Calendar</a></li></ul>
-<p class="muted">Guardar esta configuración no habilita las consultas por video ni crea citas. Puedes consultar las conexiones de WhatsApp y Google y verificar tu propio número.</p>
+<ul><li><a class="text-link" href="/settings/knowledge">Respuestas aprobadas y perfil profesional</a></li><li><a class="text-link" href="/settings/whatsapp">Conexión de WhatsApp del consultorio</a></li><li><a class="text-link" href="/settings/doctor-number">Verificar tu número de WhatsApp</a></li><li><a class="text-link" href="/settings/google">Conexión de Google Calendar</a></li><li><a class="text-link" href="/settings/stripe">Conexión de Stripe</a></li></ul>
+<p class="muted">Guardar esta configuración no habilita las consultas por video ni crea citas. Las transferencias y sus comprobantes siguen disponibles aunque Stripe no esté configurado o conectado.</p>
 </section>
 <a class="text-link" href="/dashboard">Volver al panel</a>
 </main>"#,
@@ -418,6 +418,45 @@ fn schedule(view: &SettingsView<'_>) -> String {
     ));
   }
   fields.push_str("</div>");
+  fields.push_str("<h3 class=\"form-heading\">Secuencia de recordatorios</h3>");
+  fields.push_str(&view.field(
+    "reminder_72h_enabled",
+    "Primer recordatorio 72 horas antes",
+    "Opcional. Envía un primer aviso 72 horas antes de una cita confirmada para confirmar asistencia o solicitar cambio.",
+    format!(
+      "<input id=\"reminder_72h_enabled\" name=\"reminder_72h_enabled\" type=\"checkbox\" value=\"true\" {} {}>",
+      if view.value("reminder_72h_enabled") == "true" {
+        "checked"
+      } else {
+        ""
+      },
+      view.attributes("reminder_72h_enabled")
+    ),
+  ));
+  let selected_24h = if view.value("reminder_24h_enabled").is_empty() {
+    "true"
+  } else {
+    view.value("reminder_24h_enabled")
+  };
+  let mut options_24h = String::new();
+  if !["true", "false"].contains(&selected_24h) {
+    options_24h.push_str(&option(
+      selected_24h,
+      &format!("Valor no válido: {selected_24h}"),
+      selected_24h,
+    ));
+  }
+  options_24h.push_str(&option("true", "Activado (predeterminado)", selected_24h));
+  options_24h.push_str(&option("false", "Desactivado", selected_24h));
+  fields.push_str(&view.field(
+    "reminder_24h_enabled",
+    "Recordatorio 24 horas antes",
+    "Activado de forma predeterminada para citas confirmadas.",
+    format!(
+      "<select id=\"reminder_24h_enabled\" name=\"reminder_24h_enabled\" {}>{options_24h}</select>",
+      view.attributes("reminder_24h_enabled")
+    ),
+  ));
   fields.push_str(&view.field(
     "reminder_2h_enabled",
     "Recordatorio adicional dos horas antes",
@@ -486,5 +525,142 @@ fn payments(view: &SettingsView<'_>) -> String {
       "Guardar datos de pago",
       Some(("schedule", "Volver a horarios"))
     )
+  )
+}
+
+pub struct KnowledgeItemView {
+  pub id: String,
+  pub topic: String,
+  pub question: String,
+  pub answer: String,
+  pub enabled: bool,
+}
+
+pub struct KnowledgePageView<'a> {
+  pub csrf_token: &'a str,
+  pub fields: &'a BTreeMap<String, String>,
+  pub entries: &'a [KnowledgeItemView],
+  pub editing: bool,
+  pub errors: &'a [(String, String)],
+  pub message: Option<&'a str>,
+}
+
+pub fn knowledge(view: KnowledgePageView<'_>) -> String {
+  let helper = SettingsView {
+    csrf_token: view.csrf_token,
+    step: Step::Details,
+    fields: view.fields,
+    services: &[],
+    editing_service: false,
+    errors: view.errors,
+    message: view.message,
+    complete: [true; 4],
+    timezone_options: &[],
+    timezone_example: None,
+  };
+  let message = view
+    .message
+    .map(|text| {
+      format!(
+        "<p class=\"settings-message\" role=\"status\">{}</p>",
+        escape(text)
+      )
+    })
+    .unwrap_or_default();
+  let mut list = String::new();
+  if view.entries.is_empty() {
+    list.push_str("<p class=\"muted\">Aún no hay respuestas aprobadas registradas. Cuando un contacto hace una pregunta no cubierta, se registra una solicitud de atención personal.</p>");
+  } else {
+    list.push_str("<ul class=\"service-list\" role=\"list\">");
+    for entry in view.entries {
+      let state_label = if entry.enabled {
+        "Habilitada"
+      } else {
+        "Deshabilitada"
+      };
+      let toggle_label = if entry.enabled {
+        "Deshabilitar"
+      } else {
+        "Habilitar"
+      };
+      list.push_str(&format!(
+        r#"<li><div><strong>{} — {}</strong> <span class="step-state">({state_label})</span><p>{}</p></div><div class="form-actions"><a class="text-link" href="/settings/knowledge?entry={}">Editar</a><form method="post" action="/settings/knowledge/{}/toggle"><input type="hidden" name="csrf_token" value="{}"><button class="text-link" type="submit">{toggle_label}</button></form><form method="post" action="/settings/knowledge/{}/delete"><input type="hidden" name="csrf_token" value="{}"><button class="text-link" type="submit">Eliminar</button></form></div></li>"#,
+        escape(&entry.topic),
+        escape(&entry.question),
+        escape(&entry.answer),
+        escape(&entry.id),
+        escape(&entry.id),
+        escape(view.csrf_token),
+        escape(&entry.id),
+        escape(view.csrf_token),
+      ));
+    }
+    list.push_str("</ul>");
+  }
+  let mut fields = format!(
+    "<input type=\"hidden\" name=\"entry_id\" value=\"{}\">",
+    escape(helper.value("entry_id"))
+  );
+  fields.push_str(&helper.input(
+    "topic",
+    "Tema o dato del perfil profesional",
+    "Por ejemplo: Especialidad, Cédula profesional, Preparación administrativa, Estacionamiento.",
+    "type=\"text\" required",
+  ));
+  fields.push_str(&helper.input(
+    "question",
+    "Pregunta frecuente o consulta del contacto",
+    "Escribe la pregunta o frase con la que un contacto solicita esta información.",
+    "type=\"text\" required",
+  ));
+  fields.push_str(&helper.textarea(
+    "answer",
+    "Respuesta aprobada literal",
+    "El asistente enviará este texto exactamente como lo escribas, sin que el modelo redacte hechos nuevos.",
+  ));
+  let enabled_val = if helper.value("enabled").is_empty() {
+    "true"
+  } else {
+    helper.value("enabled")
+  };
+  let enabled_options = format!(
+    "{}{}",
+    option("true", "Habilitada", enabled_val),
+    option("false", "Deshabilitada", enabled_val)
+  );
+  fields.push_str(&helper.field(
+    "enabled",
+    "Estado de publicación",
+    "Solo las respuestas habilitadas se usan en WhatsApp.",
+    format!(
+      "<select id=\"enabled\" name=\"enabled\" {}>{enabled_options}</select>",
+      helper.attributes("enabled")
+    ),
+  ));
+  let (title, submit) = if view.editing {
+    ("Editar respuesta aprobada", "Guardar cambios")
+  } else {
+    ("Añadir respuesta aprobada", "Guardar respuesta aprobada")
+  };
+  document(
+    "Respuestas aprobadas",
+    &format!(
+      r#"{}
+<main id="contenido" class="page-shell" tabindex="-1">
+<h1>Respuestas aprobadas y perfil profesional</h1>
+<p class="intro">Administra las respuestas literales autorizadas (especialidad, cédula, preparación administrativa y preguntas frecuentes). El asistente las envía palabra por palabra; cualquier duda no cubierta se registra para tu atención personal.</p>
+{message}{}
+<section class="settings-content" aria-labelledby="knowledge-list-title">
+<h2 id="knowledge-list-title">Respuestas registradas</h2>
+{list}
+<h2 class="form-heading" id="step-title">{title}</h2>
+{}
+</section>
+<a class="text-link" href="/settings">Volver a configuración</a>
+</main>"#,
+      navigation(view.csrf_token, true),
+      error_summary(&helper),
+      helper.form("/settings/knowledge", fields, submit, None)
+    ),
   )
 }

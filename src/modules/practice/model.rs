@@ -21,9 +21,17 @@ pub struct Practice {
   pub receipt_window_minutes: Option<i32>,
   pub review_margin_minutes: Option<i32>,
   pub grace_minutes: Option<i32>,
+  #[serde(default)]
+  pub reminder_72h_enabled: bool,
+  #[serde(default = "default_true")]
+  pub reminder_24h_enabled: bool,
   pub reminder_2h_enabled: bool,
   pub review_interval_minutes: i32,
   pub urgent_notice_minutes: i32,
+}
+
+fn default_true() -> bool {
+  true
 }
 
 pub struct Details {
@@ -108,7 +116,7 @@ pub(super) fn number(fields: &Fields, key: &str, positive: bool, errors: &mut Er
 }
 
 fn centavos(raw: &str) -> Option<i64> {
-  let (whole, fraction) = raw.split_once('.').map_or((raw, ""), |parts| parts);
+  let (whole, fraction) = raw.split_once('.').unwrap_or((raw, ""));
   if whole.is_empty()
     || !whole.bytes().all(|b| b.is_ascii_digit())
     || fraction.len() > 2
@@ -174,6 +182,67 @@ impl Service {
   }
 }
 
+#[derive(Clone, sea_orm::FromQueryResult)]
+pub struct KnowledgeEntry {
+  pub id: uuid::Uuid,
+  pub topic: String,
+  pub question: String,
+  pub answer: String,
+  pub enabled: bool,
+  pub updated_at: i64,
+}
+
+impl KnowledgeEntry {
+  pub fn parse(fields: &Fields, now: i64) -> Result<Self, Errors> {
+    let mut errors = vec![];
+    let id = value(fields, "entry_id").parse::<uuid::Uuid>();
+    if id.is_err() {
+      errors.push((
+        "entry_id".into(),
+        "Identificador inválido. Abre un formulario nuevo.".into(),
+      ));
+    }
+    let topic = text(fields, "topic", 120, true, &mut errors);
+    let question = text(fields, "question", 300, true, &mut errors);
+    let answer = text(fields, "answer", 2000, true, &mut errors);
+    let enabled = match value(fields, "enabled") {
+      "" | "true" => true,
+      "false" => false,
+      _ => {
+        errors.push((
+          "enabled".into(),
+          "Indica si esta respuesta aprobada está habilitada o deshabilitada.".into(),
+        ));
+        true
+      }
+    };
+    if !errors.is_empty() {
+      return Err(errors);
+    }
+    Ok(Self {
+      id: id.unwrap(),
+      topic,
+      question,
+      answer,
+      enabled,
+      updated_at: now,
+    })
+  }
+
+  pub fn fields(&self) -> Fields {
+    [
+      ("entry_id", self.id.to_string()),
+      ("topic", self.topic.clone()),
+      ("question", self.question.clone()),
+      ("answer", self.answer.clone()),
+      ("enabled", self.enabled.to_string()),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.into(), v))
+    .collect()
+  }
+}
+
 impl Practice {
   pub fn fields(&self) -> Fields {
     let mut fields: Fields = [
@@ -186,6 +255,14 @@ impl Practice {
       (
         "cancellation_policy",
         self.cancellation_policy.clone().unwrap_or_default(),
+      ),
+      (
+        "reminder_72h_enabled",
+        self.reminder_72h_enabled.to_string(),
+      ),
+      (
+        "reminder_24h_enabled",
+        self.reminder_24h_enabled.to_string(),
       ),
       ("reminder_2h_enabled", self.reminder_2h_enabled.to_string()),
       (

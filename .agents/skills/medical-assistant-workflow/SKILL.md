@@ -25,5 +25,5 @@ Use for Rust/API/domain, authentication, integration, UI, test, or release-gate 
 
 - This is a secure dashboard foundation for one Practice and one Doctor per deployment, not a clinical record or ready product release. Do not create longitudinal patient records or imply appointment management is available.
 - A Patient is named on one Appointment only; a Contact may book for several Patients. Keep `CONTEXT.md` vocabulary and the single-Practice ADR.
-- A Receipt is evidence of a transfer, never proof funds arrived. Only the Doctor's explicit Payment Verification marks a video appointment paid; CLABE is 18 ASCII digits stored as text, format-only.
-- Never log, print, commit, or send passwords, TOTP/encryption keys, enrollment URIs, cookies, tokens, OAuth credentials, receipt content, or patient/contact data. `bootstrap-doctor` enrollment and deployment remain operator-only; do not automate them or use a real provider during tests.
+- A Receipt is transfer evidence, never proof funds arrived. A Payment Link is not proof either. A video Appointment is paid only after the Doctor's explicit Payment Verification or System-confirmed Stripe card payment. CLABE is 18 ASCII digits stored as text, format-only.
+- Never log, print, commit, or send passwords, TOTP/encryption keys, Stripe API keys, enrollment URIs, cookies, tokens, OAuth credentials, receipt content, or patient/contact data. `bootstrap-doctor` enrollment and deployment remain operator-only; do not automate them or use a real provider during tests.

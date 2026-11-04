@@ -54,11 +54,20 @@ pub struct Configuration {
   #[serde(skip)]
   pub claude_test_endpoint: Option<String>,
   #[serde(default)]
+  pub inception_api_key: Option<String>,
+  #[serde(default)]
+  pub mercury_model: Option<String>,
+  #[cfg(test)]
+  #[serde(skip)]
+  pub mercury_test_endpoint: Option<String>,
+  #[serde(default)]
   pub waha_takeover_enabled: bool,
   #[serde(skip)]
   pub waha: Option<crate::modules::whatsapp::config::WahaConfig>,
   #[serde(skip)]
   pub google: Option<crate::modules::google_calendar::config::GoogleConfig>,
+  #[serde(skip)]
+  pub stripe: Option<crate::modules::stripe::config::StripeConfig>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -132,6 +141,16 @@ impl Configuration {
       public_origin.as_deref(),
     )
     .unwrap_or_else(|message| panic!("{message}"));
+    let stripe_secret_key = match std::env::var("STRIPE_SECRET_KEY") {
+      Ok(value) => Some(value),
+      Err(std::env::VarError::NotPresent) => None,
+      Err(std::env::VarError::NotUnicode(_)) => Some(String::new()),
+    };
+    let stripe = crate::modules::stripe::config::StripeConfig::parse(
+      stripe_secret_key.as_deref(),
+      public_origin.as_deref(),
+    )
+    .unwrap_or_else(|message| panic!("{message}"));
     assert!(
       google
         .as_ref()
@@ -149,6 +168,11 @@ impl Configuration {
     let (claude_api_key, claude_model) = parse_claude_settings(
       std::env::var("CLAUDE_API_KEY").ok(),
       std::env::var("CLAUDE_MODEL").ok(),
+    )
+    .unwrap_or_else(|message| panic!("{message}"));
+    let (inception_api_key, mercury_model) = parse_mercury_settings(
+      std::env::var("INCEPTION_API_KEY").ok(),
+      std::env::var("MERCURY_MODEL").ok(),
     )
     .unwrap_or_else(|message| panic!("{message}"));
     let waha_takeover_enabled = std::env::var("WAHA_TAKEOVER_ENABLED")
@@ -186,11 +210,16 @@ impl Configuration {
       claude_model,
       #[cfg(test)]
       claude_test_endpoint: None,
+      inception_api_key,
+      mercury_model,
+      #[cfg(test)]
+      mercury_test_endpoint: None,
       waha_takeover_enabled,
       waha_outbound_enabled,
       waha_contact_replies_per_hour,
       waha,
       google,
+      stripe,
     });
 
     info!(
@@ -264,6 +293,35 @@ pub fn parse_claude_settings(
     _ => Err(
       "Invalid Claude configuration: CLAUDE_API_KEY and CLAUDE_MODEL must be configured together",
     ),
+  }
+}
+pub const DEFAULT_MERCURY_MODEL: &str = "mercury-3";
+
+pub fn parse_mercury_settings(
+  api_key: Option<String>,
+  model: Option<String>,
+) -> Result<(Option<String>, Option<String>), &'static str> {
+  match (api_key, model) {
+    (None, None) => Ok((None, None)),
+    (Some(key), None)
+      if (1..=4096).contains(&key.len()) && key.bytes().all(|byte| byte.is_ascii_graphic()) =>
+    {
+      Ok((Some(key), Some(DEFAULT_MERCURY_MODEL.to_owned())))
+    }
+    (Some(key), Some(model))
+      if (1..=4096).contains(&key.len())
+        && key.bytes().all(|byte| byte.is_ascii_graphic())
+        && (1..=256).contains(&model.len())
+        && model.bytes().all(|byte| byte.is_ascii_graphic()) =>
+    {
+      Ok((Some(key), Some(model)))
+    }
+    (Some(_), _) => {
+      Err("Invalid Mercury configuration: API key/model must be non-empty printable values")
+    }
+    (None, Some(_)) => {
+      Err("Invalid Mercury configuration: MERCURY_MODEL requires INCEPTION_API_KEY")
+    }
   }
 }
 

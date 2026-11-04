@@ -1089,7 +1089,7 @@ async fn finish_sync(
     .await?;
     let settings = tx
       .query_one(store::sql(
-        "SELECT reminder_2h_enabled FROM practice WHERE id=1",
+        "SELECT reminder_72h_enabled,reminder_24h_enabled,reminder_2h_enabled FROM practice WHERE id=1",
         vec![],
       ))
       .await?
@@ -1100,7 +1100,11 @@ async fn finish_sync(
       revision,
       starts_at,
       now,
-      settings.try_get("", "reminder_2h_enabled")?,
+      (
+        settings.try_get("", "reminder_72h_enabled")?,
+        settings.try_get("", "reminder_24h_enabled")?,
+        settings.try_get("", "reminder_2h_enabled")?,
+      ),
     )
     .await?;
     enqueue_confirmation(

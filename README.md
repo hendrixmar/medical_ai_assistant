@@ -7,19 +7,23 @@ separate deployment. See [CONTEXT.md](CONTEXT.md) and the [architecture decision
 The current local application includes a protected dashboard with attention and
 upcoming Appointments; Contact inbox and history; Appointment lists, details and
 history; deterministic WhatsApp booking, rescheduling and cancellation; protected
-Receipt copying, review and download; Doctor-only Payment Verification; Google
-Calendar availability and event/Meet synchronization; reminders; Doctor Number
+Receipt copying, review and download; Doctor Payment Verification for bank
+transfers; optional Stripe Connect card payments with server-side confirmation;
+Google Calendar availability and event/Meet synchronization; reminders; Doctor Number
 verification, read-only agenda answers and notifications; and Contact Takeover.
-An optional Claude integration only parses closed, read-only preferences: it never
-decides availability, payment, or business mutations.
+An optional Mercury 3 decision agent (`INCEPTION_API_KEY`, default model `mercury-3`,
+or the optional Claude fallback parser) proposes closed, read-only candidate decisions
+via `decidir`: it never decides availability, payment, or business mutations.
 
 This is **not a clinical record, legally approved service, or production-ready
-release**. Patient names belong to one Appointment, not a longitudinal registry;
-a Receipt is transfer evidence, never proof money arrived. Only the Doctor can
-verify payment. Outbound WhatsApp text and Takeover default OFF. The privacy notice
-is provisional. Synthetic/local evidence does not establish live provider
-acceptance; real WAHA pairing and storage recovery, Google consent, production
-deployment, Doctor enrollment, legal approval and release remain unperformed.
+release**. Patient names belong to one Appointment, not a longitudinal registry.
+A Receipt is transfer evidence, never proof funds arrived. The Doctor's explicit
+Payment Verification or a server-confirmed matching Stripe card payment marks a
+video Appointment paid. Outbound WhatsApp text and Takeover default OFF. The privacy
+notice is provisional. Synthetic/local evidence does not establish live provider
+acceptance. Real WAHA pairing and storage recovery, Google consent, Stripe platform
+setup and live card acceptance remain unperformed. Production deployment, Doctor
+enrollment, legal approval, and release also remain open.
 
 Issue labels #4–#9 below refer to historical implementation/evidence slices, not
 the present feature boundary. Their original incidents and provider gates remain
@@ -52,8 +56,8 @@ Never commit `.env` or credentials.
 | `DATABASE_TIMEOUT` | `5` seconds | Database connection timeout |
 | `DATABASE_RUN_MIGRATIONS` | sample `true`; runtime development `true`, production `false` | Whether server startup runs migrations; Compose explicitly sets `true` |
 | `BCRYPT_COST` | `12` | Password-hashing cost, 4–31; retain 12 or stronger outside isolated tests |
-| `PUBLIC_ORIGIN` | absent | Exact canonical HTTPS browser origin; required for Doctor login and provider OAuth/outbound |
-| `DOCTOR_TOTP_KEY` | absent | Stable base64-encoded 32-byte key for TOTP and purpose-separated Doctor Number encryption/fingerprints |
+| `PUBLIC_ORIGIN` | absent | Exact canonical HTTPS browser origin; required for Doctor login, Stripe, and provider OAuth/outbound |
+| `STRIPE_SECRET_KEY` | absent | Optional server-only Stripe secret or restricted key (`sk_` or `rk_`); requires canonical HTTPS `PUBLIC_ORIGIN` |
 | `WAHA_BASE_URL` | absent | Optional canonical WAHA origin; HTTPS except explicit loopback HTTP |
 | `WAHA_API_KEY` | absent | Plain server-only API credential; no default |
 | `WAHA_WEBHOOK_HMAC_KEY` | absent | Operator-provisioned literal UTF-8 secret of at least 32 characters |
@@ -65,18 +69,26 @@ Never commit `.env` or credentials.
 | `GOOGLE_TOKEN_KEY` | absent | Stable standard-base64 32-byte Google-only AES-256-GCM key, distinct from `DOCTOR_TOTP_KEY` |
 | `CLAUDE_API_KEY` | absent | Optional Claude API key; requires explicit `CLAUDE_MODEL` |
 | `CLAUDE_MODEL` | absent; no default | Optional model selection; requires `CLAUDE_API_KEY` |
+| `INCEPTION_API_KEY` | absent | Optional Inception API key for Mercury 3 (`https://api.inceptionlabs.ai/v1/chat/completions`) |
+| `MERCURY_MODEL` | `mercury-3` when `INCEPTION_API_KEY` is set | Optional Mercury model selection; requires `INCEPTION_API_KEY` |
 | `RUST_LOG` | ignored | Cannot widen fixed `off,server=info` logging |
 
 For the application configuration, WAHA values are either all absent or all
 supplied and valid; supplied empty, partial or malformed values fail startup.
 Google's three values follow the same absent-or-complete rule and require canonical
-HTTPS `PUBLIC_ORIGIN`. Claude's key and explicit model are an optional nonempty
-pair, with no fallback model. Never add empty `KEY=` entries as a substitute for
-omitting an optional setting. No provider endpoint override is available.
+HTTPS `PUBLIC_ORIGIN`. `INCEPTION_API_KEY` enables Mercury 3 (`MERCURY_MODEL`
+defaults to `mercury-3`; setting `MERCURY_MODEL` without `INCEPTION_API_KEY` fails
+startup). Claude's key and explicit model remain an optional nonempty fallback
+pair, with no fallback model. Stripe is disabled when `STRIPE_SECRET_KEY` is absent.
+When supplied, it must be printable, contain no whitespace, be at most 255
+characters, and start with `sk_` or `rk_`; Stripe also requires canonical HTTPS
+`PUBLIC_ORIGIN`. Keep the key in the private server environment, never in source or
+this sample. Never add empty `KEY=` entries as a substitute for omitting an optional
+setting. No provider endpoint override is available.
 
 The removed historical account migration is unsupported. Use a **fresh database**;
 unknown or old migration history fails closed. Preserve an old database separately;
-this is not an upgrade path, reset command, or credential seed. Eleven ordered
+this is not an upgrade path, reset command, or credential seed. Twelve ordered
 migrations currently compose the local schema:
 
 1. `m202610070001_doctor_access`: the singleton Doctor, hashed-token sessions,
@@ -108,13 +120,23 @@ migrations currently compose the local schema:
    together, or 48-byte ciphertext + 12-byte nonce); existing rows stay NULL/NULL
    until the first offline Doctor key rotation. Its down operation refuses
    destructive removal.
+12. `m202610240001_stripe_connect`: singleton connected-account state and
+   appointment/revision Price and Payment Link records for server-side payment
+   polling; the tables store no patient or Contact data. Its down operation refuses
+   to discard Stripe connection or payment evidence.
+13. `m202610240002_practice_and_agenda_extensions`: configurable 72-hour and
+   24-hour Reminder toggles on `practice` (`reminder_72h_enabled=false`,
+   `reminder_24h_enabled=true`) and Doctor-approved verbatim `knowledge_entries`
+   for FAQ and professional-profile answers. Its down operation refuses
+   destructive removal.
 
 `processing_jobs` has exactly three constrained kinds:
 `prepare_inbox`, `process_conversation`, `send_outbox`. The separate
 `appointment_jobs` table has `calendar_sync`, `calendar_cancel`, `reminders`,
-`review`, `expiry` and `conflict`. No migration rollback may discard Doctor,
-Practice, Appointment, Receipt, recovery or messaging evidence. Migrations are
-idempotently applied by SeaORM; re-running them preserves saved records.
+`review`, `expiry`, `conflict` and `stripe_link`. No migration rollback may discard
+Doctor, Practice, Appointment, Receipt, Stripe connection or payment evidence,
+recovery or messaging evidence. Migrations are idempotently applied by SeaORM;
+re-running them preserves saved records.
 
 For a fresh local development database, run migrations explicitly if desired and
 start the server:
@@ -138,16 +160,20 @@ Unknown legacy migration history fails startup rather than being rewritten.
   `GET /assets/doctor.css`. `GET/POST /login` uses pre-authentication CSRF and
   exact-Origin checks; it is not a registration flow.
 - The Doctor-protected GET routes include `/dashboard`, `/settings`,
-  `/settings/whatsapp`, `/settings/whatsapp/qr`, `/settings/doctor-number`,
-  `/settings/google`, `/contacts`, `/contacts/{id}`, `/appointments`,
+  `/settings/knowledge`, `/settings/whatsapp`, `/settings/whatsapp/qr`,
+  `/settings/doctor-number`, `/settings/google`, `/settings/stripe`,
+  `/settings/stripe/return`, `/settings/stripe/refresh`, `/contacts`,
+  `/contacts/{id}`, `/appointments` (including `?view=day|week|month`),
   `/appointments/{id}` and `/dashboard/payments/receipts/{id}` plus its `/file` route.
-- Protected POST routes include `/logout`; `/settings/{details,services,schedule,payments}`;
-  `/settings/whatsapp/start`; `/settings/whatsapp/request-code`; `/settings/doctor-number/challenge`;
-  `/settings/google/{connect,calendars,probe}` and
-  `/settings/google/probes/{id}/cleanup`; `/contacts/{id}/takeover/end`;
-  `/followups/{id}/resolve`; `/appointments/{id}/{cancel,reschedule}` and
-  `/appointments/{id}/refund/resolve`; and
-  `/dashboard/payments/receipts/{id}/{association,verify,reject,late-outcome,cancel}`.
+- Protected POST routes include `/logout`; `/settings/{details,services,schedule,payments,knowledge}`;
+  `/settings/knowledge/{id}/{toggle,delete}`; `/settings/whatsapp/start`;
+  `/settings/whatsapp/request-code`; `/settings/doctor-number/challenge`;
+  `/settings/google/{connect,disconnect,calendars,probe}` and
+  `/settings/google/probes/{id}/cleanup`; `/settings/stripe/{connect,disconnect}`;
+  `/contacts/{id}/takeover/end`; `/followups/{id}/resolve`;
+  `/appointments/create`; `/appointments/{id}/{cancel,reschedule}` and
+  `/appointments/{id}/refund/resolve`;
+  and `/dashboard/payments/receipts/{id}/{association,verify,reject,late-outcome,cancel}`.
   All share the Doctor session, exact Origin and CSRF boundary.
 - `GET /settings/google/callback` also verifies the initiating session and OAuth
   state; its outer response is a clean, resource-free, no-store/no-referrer redirect.
@@ -193,13 +219,15 @@ the file later does not rotate existing database passwords.
 
 `APP_PROVIDER_ENV_FILE` is a **required Compose path**, not a provider credential:
 the file must exist, and the path should be absolute and outside the repository.
-It may be a zero-byte file when no optional Google or Claude provider is configured.
-That is different from putting an empty `GOOGLE_*` or `CLAUDE_*` key inside it:
-optional keys must be absent or supplied as their complete nonempty set/pair.
-Keep `DOCTOR_TOTP_KEY` stable and escrow it separately. If Google is enabled,
-`GOOGLE_TOKEN_KEY` is also stable and separately escrowed; it must differ from the
-Doctor key. `WAHA_OUTBOUND_ENABLED=false` and `WAHA_TAKEOVER_ENABLED=false` are
-the explicit safe defaults; neither follows from pairing or saving settings.
+It may be a zero-byte file when no optional Google, Mercury, Claude or Stripe provider is
+configured. That is different from putting an empty `GOOGLE_*`, `INCEPTION_API_KEY`,
+`MERCURY_MODEL`, `CLAUDE_*` or `STRIPE_SECRET_KEY` entry inside it: optional keys
+must be absent or supplied as their complete nonempty set/pair. Keep `DOCTOR_TOTP_KEY` stable and escrow it
+separately. If Google is enabled, `GOOGLE_TOKEN_KEY` is also stable and separately
+escrowed; it must differ from the Doctor key. Store `STRIPE_SECRET_KEY` only in this
+app-only file when Stripe is enabled. `WAHA_OUTBOUND_ENABLED=false` and
+`WAHA_TAKEOVER_ENABLED=false` are the explicit safe defaults; neither follows from
+pairing or saving settings.
 
 The Compose environment file must be owner-only and private. Set its path in the
 operator shell without placing credentials in command history:
@@ -296,7 +324,15 @@ publish Postgres, WAHA or the app directly to the public Internet.
    capability check. The app requests only the approved scopes. A test or saved
    credential is not live Google acceptance; preserve cleanup evidence and the
    independent Google encryption key.
-4. **Messaging/legal gate:** Text dispatch and Takeover remain OFF by default.
+4. **Stripe Connect:** Read the [Stripe Connect operations and evidence record](docs/integrations/stripe.md)
+   before setup. Confirm that Connect is enabled and the platform can onboard
+   connected accounts in Mexico. Confirm that the Doctor's account has active
+   `card_payments` and `charges_enabled=true`.
+   Store the server-only `STRIPE_SECRET_KEY` in the app-only provider file. Use a
+   restricted key. Follow the integration record to set operation permissions and
+   verify them with a sandbox key. No live Stripe setup or card acceptance has
+   been recorded.
+5. **Messaging/legal gate:** Text dispatch and Takeover remain OFF by default.
    Changing `WAHA_OUTBOUND_ENABLED` or `WAHA_TAKEOVER_ENABLED` is a separate
    operator release decision, requires consistent restarts and approved live
    evidence; it is not part of pairing. The privacy notice remains provisional,
@@ -510,7 +546,8 @@ All interval fields use integers up to `2147483647`; validation reports this
 technical bound rather than choosing an operational policy. These values are not
 a real Practice's configuration. Completion is derived from valid saved fields and
 Services, not a posted completion flag. The Conexiones footer links to actual WAHA
-connection status, Doctor Number verification and Google Calendar connection/capability checks.
+connection status, Doctor Number verification, Google Calendar connection/capability
+checks, and Stripe Connect card-payment settings.
 WhatsApp live-provider acceptance is separate from configuration completion. Saving
 settings changes Practice configuration only; it does not create an Appointment or
 calculate an individual time's availability/deadline. Appointment and video
@@ -550,25 +587,43 @@ instructions and buffers are snapshots; changes to current Practice settings do
 not rewrite an existing Appointment.
 
 Video begins as `awaiting_payment` / `awaiting_receipt`. The Contact receives
-snapshotted transfer instructions and a Receipt Deadline. A Receipt is copied as
-evidence and can be reviewed or downloaded only through the protected Doctor
-dashboard. A timely Receipt must also arrive before Hold expiry to move the
-Appointment to `under_review` and protect its Hold while the Doctor reviews it.
-The Receipt never verifies money: only the authenticated Doctor's explicit
-Payment Verification marks Payment `verified`. Rejection, replacement Receipt,
-late Receipt, clarification and Doctor disposition remain explicit history and
-attention decisions. A pending-payment reschedule keeps the same Appointment and
-its original Receipt Deadline; it does not restart that window. A Receipt arriving
-after the Hold expires stays late, even if WhatsApp says it was sent before the
-deadline; it never silently restores the old slot.
+snapshotted transfer instructions and a Receipt Deadline. If Stripe is ready when
+the Appointment is booked, a durable job creates a card-only Payment Link after
+the booking transaction commits. The job adds the link to the existing WhatsApp
+payment instructions. A Stripe outage does not block booking or remove bank
+transfer as a fallback.
 
-Google availability or Calendar failures remain visible as pending/failed state;
-there is no fabricated Meet URL. A video appointment reminder includes a Meet link
-only after actual Google conference success, Calendar synchronization and verified
-Payment. Cancellation after verified payment creates a `refund_due` Attention
-Item. The Doctor must handle the refund outside the application, then use
-**Marcar reembolso como resuelto**; the idempotent action records history and
-resolves attention once, but never transfers funds or reverses verified Payment.
+The worker polls the connected account's Checkout Sessions. It confirms payment
+only when the session is complete and paid, its currency is `mxn`, and its total
+matches the Appointment's snapshotted price. Appointment History records actor
+`System` for the confirmation. Browser return pages do not confirm payment.
+
+A Receipt is copied as transfer evidence and can be reviewed or downloaded only
+through the protected Doctor dashboard. A timely Receipt must also arrive before
+Hold expiry to move the Appointment to `under_review` and protect its Hold while
+the Doctor reviews it. The Receipt never verifies money. For a bank transfer, only
+the authenticated Doctor's explicit Payment Verification marks Payment `verified`.
+For a Stripe card payment, the System does so only after the server-side match.
+Rejection, replacement Receipt, late Receipt, clarification, and Doctor disposition
+remain explicit history and attention decisions.
+A pending-payment reschedule keeps the same Appointment, Payment Link, and
+original Receipt Deadline. It does not restart that window. A Receipt that arrives
+after the Hold expires remains late, even if WhatsApp says it was sent before the
+deadline. It never silently restores the old slot. Stripe Payment Links have no
+built-in expiry. The worker deactivates them at the Receipt Deadline, on
+cancellation or expiry, after payment, or when the Doctor rejects a Receipt and
+opens a new Receipt window.
+
+Google availability or Calendar failures remain pending or failed. The app does
+not invent a Meet URL. A video Appointment reminder includes a Meet link only
+after Google creates a conference, Calendar synchronization succeeds, and Payment
+is verified. Cancellation after verified payment creates a `refund_due` Attention
+Item. The application never issues a refund. The Doctor handles the refund outside
+the app, then uses **Marcar reembolso como resuelto**. That idempotent action
+records history and resolves attention once. It does not move funds or reverse
+verified Payment. The Doctor handles a card refund in Stripe's Dashboard. Late or
+duplicate Stripe payments also need Doctor action. The application never refunds
+them automatically.
 
 The system schedules a 24-hour Reminder for eligible Appointments and an optional
 2-hour Reminder when the Doctor enables it. The app records an explicit attendance
@@ -580,9 +635,11 @@ replies are suppressed for that Contact; essential operational notices remain el
 
 The verified Doctor Number can ask the read-only agenda for stored Appointment
 facts in the Practice timezone. It cannot change records or invent availability.
-Optional Claude parsing maps preferences to a closed read-only representation;
-application code owns all facts, validation, availability, payment decisions and
-mutations.
+Optional Mercury 3 `decidir` planning (with `reasoning_effort="medium"` and packaged
+`src/modules/conversation/decision.md`, or the optional Claude parser) maps sanitized
+messages to closed candidate decisions outside the database transaction; application
+code rechecks state/revisions under lock and owns all facts, validation, availability,
+payment decisions and mutations.
 
 Retention removes eligible Receipt bytes and inbox/outbox text at the 90-day
 boundary only after every associated Appointment is terminal and the association
@@ -658,6 +715,18 @@ submitted challenge code under its separate inbox retention policy; do not claim
 that every stored copy is encrypted or log it. Real sender/`me` evidence, pairing,
 privacy/consent and provider launch gates remain open.
 
+### Stripe Connect card payments (live acceptance remains open)
+
+See the [Stripe Connect operations and evidence record](docs/integrations/stripe.md).
+The Doctor links a Stripe account through Stripe-hosted onboarding in
+**Configuración → Conexiones**; the Doctor never enters an API key. The app creates
+Payment Links for card-only direct charges on that connected account, with no
+application fee. Bank transfer and Receipt review remain available. The worker
+confirms payments by polling Stripe because the app's origin is private to the
+tailnet; no Stripe webhooks are configured. Synthetic fixture behavior does not
+prove platform eligibility, live restricted-key permissions, real card acceptance
+or production deployment.
+
 ### Google Calendar and Meet (#9 historical slice; live acceptance still open)
 
 See [Google connection, lifecycle and operations](docs/integrations/google-calendar.md).
@@ -696,10 +765,11 @@ Fast unit checks (no test database required):
 cargo test --locked
 ```
 
-This excludes ignored database tests and is **not full application acceptance**.
-Full local acceptance includes Doctor, Practice, WAHA/Contact conversation,
-Appointment, payment/Receipt, Calendar/Meet, reminder, recovery and retention
-tests against dedicated real Postgres. Do not treat an ignored test as a pass.
+Full local acceptance requires tests for Doctor, Practice, WAHA and Contact
+conversations, and Appointments with payments and Receipts. It also requires
+Stripe payment, Calendar and Meet, reminder, recovery, and retention tests against
+dedicated real Postgres. The Stripe client fixture alone is not database-backed
+payment acceptance. Do not treat an ignored test as a pass.
 
 ### Disposable Postgres fixture
 
@@ -730,18 +800,25 @@ The acceptance tests require **explicit `TEST_DATABASE_URL`** and never fall bac
 to `DATABASE_URL` or `.env`. The actual database name must be
 `medical_assistant_test` (or another name ending in `_test`). Use only a disposable
 database even if another database happens to have that suffix. Test URLs do not
-accept query parameters or fragments. Tests create a unique schema per test to isolate their data and initialize their own fixtures;
-no application migration command is needed for this test setup.
+accept query parameters or fragments. Tests create a unique schema per test to
+isolate their data and initialize their fixtures. No application migration command
+is needed for this test setup.
 
 The public router composes `Config` and `Db` without requiring a server listener.
 A test-only persistence fixture makes an HTTP response depend on real database
 data through the same router middleware. It is not a production diagnostic route
-or a product table, and it does not change the static health endpoint. These
-checks need no live WhatsApp, Google, or other provider credentials. Google tests also use
-actual synthetic OAuth/Calendar HTTP and real worker/DB crash boundaries; see the integration
-record for conservative single-dispatch and cleanup evidence. Provider-dependent route and
-streamed-body limits, captured secret-safe logs, callback timeout envelopes, exact scopes,
-credential rotation and original-target cleanup are exercised without production fixtures.
+or product table, and it does not change the static health endpoint. These checks
+need no live WhatsApp, Google, or other provider credentials.
+
+Google tests use synthetic OAuth and Calendar HTTP with real worker and database
+crash boundaries. See the integration record for single-dispatch and cleanup
+evidence. Stripe client tests use a local Axum fixture to check configuration and
+API request construction. See the [Stripe evidence record](docs/integrations/stripe.md).
+The fixture does not contact Stripe or establish live account eligibility,
+restricted-key permissions, or payment acceptance. Provider-dependent route and
+streamed-body limits, captured secret-safe logs, callback timeout envelopes, exact
+scopes, credential rotation, and original-target cleanup are exercised without
+production fixtures.
 
 Doctor acceptance tests enroll isolated fixtures through the real enrollment
 service, then submit real passwords and generated TOTP codes through the full
@@ -806,11 +883,11 @@ cargo build --locked --bins
 ## Changelog and evidence
 
 **Verification recorded 2026-10-16 and 2026-10-19.** The
-integrated local application now covers the Contact, Appointment, Receipt,
-Payment, reminder, Doctor Number/agenda, Google Calendar/Meet, recovery, Takeover
-and retention paths described above. The 10 migrations and current job kinds are
-listed in this README rather than treating the older #4–#9 slice boundaries as
-current product gaps.
+integrated local application at that checkpoint covered the Contact, Appointment,
+Receipt, Payment, reminder, Doctor Number/agenda, Google Calendar/Meet, recovery,
+Takeover and retention paths described above. The 2026-10-19 record listed the
+then-current 10 migrations and job kinds rather than treating the older #4–#9
+slice boundaries as current product gaps.
 
 - Final Rust verification on 2026-10-19: `cargo fmt --all -- --check`,
   `cargo clippy --locked --all-targets -- -D warnings`, and

@@ -917,6 +917,8 @@ mod tests {
 
   const NOW_MS: i64 = 1_800_000_000_000;
   const CONTACT: &str = "15550001111@c.us";
+  // The retention advisory lock is database-wide, while test isolation is per schema.
+  static ADVISORY_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
   struct TestClock(AtomicI64);
   impl Clock for TestClock {
@@ -1024,6 +1026,7 @@ mod tests {
   #[tokio::test]
   #[ignore = "requires dedicated TEST_DATABASE_URL Postgres database"]
   async fn ninety_day_boundary_redacts_only_fully_eligible_copies_and_preserves_facts() {
+    let _serial = ADVISORY_LOCK.lock().await;
     with_database(|db| async move {
       db.run_migrations().await.unwrap();
       let contact = Uuid::now_v7();
@@ -1234,6 +1237,7 @@ mod tests {
   #[tokio::test]
   #[ignore = "requires dedicated TEST_DATABASE_URL Postgres database"]
   async fn doctor_notification_retention_uses_appointment_owner_not_recipient() {
+    let _serial = ADVISORY_LOCK.lock().await;
     with_database(|db| async move {
       db.run_migrations().await.unwrap();
       let patient = Uuid::now_v7();
@@ -1335,6 +1339,7 @@ mod tests {
   #[tokio::test]
   #[ignore = "requires dedicated TEST_DATABASE_URL Postgres database"]
   async fn retention_skips_an_appointment_locked_for_late_payment_recovery() {
+    let _serial = ADVISORY_LOCK.lock().await;
     with_database(|db| async move {
       db.run_migrations().await.unwrap();
       let contact = Uuid::now_v7();

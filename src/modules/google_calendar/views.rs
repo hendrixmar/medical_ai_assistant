@@ -147,12 +147,30 @@ fn connection(view: &GoogleView<'_>) -> String {
       csrf(view)
     )
   };
+  let disconnect = if matches!(
+    view.connection,
+    ConnectionView::Connected
+      | ConnectionView::ReauthorizationRequired
+      | ConnectionView::Unavailable
+  ) {
+    format!(
+      r#"<form class="settings-form" method="post" action="/settings/google/disconnect" aria-describedby="google-disconnect">
+{}
+<p class="muted" id="google-disconnect">Desconectar borra las credenciales guardadas, pide a Google revocar el acceso y quita la selección de calendarios. Las citas por video dejan de ofrecerse hasta volver a conectar. Los eventos ya creados en tu calendario no se borran.</p>
+<div class="form-actions"><button type="submit">Desconectar Google</button></div>
+</form>"#,
+      csrf(view)
+    )
+  } else {
+    String::new()
+  };
   format!(
     r#"<section class="dashboard-section" aria-labelledby="google-connection">
 <h2 id="google-connection">{title}</h2>
 <p class="muted">{description}</p>
 <p class="muted" id="google-reconnect">Al conectar puedes elegir otra cuenta. Una nueva conexión requiere volver a seleccionar los calendarios y comprobar sus permisos; no cambia los demás datos del consultorio ni borra las limpiezas pendientes.</p>
 {action}
+{disconnect}
 </section>"#
   )
 }

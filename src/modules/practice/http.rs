@@ -5,7 +5,7 @@ use super::{
 };
 use crate::{app::AppState, modules::doctor::DoctorSession};
 use axum::{
-  extract::{Query, State},
+  extract::{Path, Query, State},
   http::StatusCode,
   response::{Html, IntoResponse, Redirect, Response},
   routing::{get, post},
@@ -20,6 +20,12 @@ pub fn router() -> Router<AppState> {
     .route("/settings/services", post(service))
     .route("/settings/schedule", post(schedule))
     .route("/settings/payments", post(payments))
+    .route(
+      "/settings/knowledge",
+      get(knowledge_page).post(save_knowledge),
+    )
+    .route("/settings/knowledge/{id}/toggle", post(toggle_knowledge))
+    .route("/settings/knowledge/{id}/delete", post(delete_knowledge))
     .layer(axum::extract::DefaultBodyLimit::max(64 * 1024))
 }
 
@@ -28,6 +34,12 @@ struct Navigation {
   step: Option<String>,
   saved: Option<String>,
   service: Option<String>,
+}
+
+#[derive(Default, Deserialize)]
+struct KnowledgeQuery {
+  entry: Option<String>,
+  saved: Option<String>,
 }
 
 fn unavailable() -> Response {
@@ -278,5 +290,125 @@ async fn details(
       )
       .await
     }
+  }
+}
+
+async fn render_knowledge(
+  state: &AppState,
+  session: &DoctorSession,
+  posted: Option<Fields>,
+  errors: model::Errors,
+  message: Option<&str>,
+  entry_id: Option<&str>,
+) -> Response {
+  let Ok(entries) = store::knowledge_entries(&state.db).await else {
+    return unavailable();
+  };
+  let editing = match entry_id {
+    Some(id) => {
+      let Ok(id) = id.parse::<uuid::Uuid>() else {
+        return (StatusCode::NOT_FOUND, "Respuesta no encontrada.").into_response();
+      };
+      let Some(entry) = entries.iter().find(|entry| entry.id == id) else {
+        return (StatusCode::NOT_FOUND, "Respuesta no encontrada.").into_response();
+      };
+      Some(entry)
+    }
+    None => None,
+  };
+  let mut fields = Fields::new();
+  fields.insert("entry_id".into(), uuid::Uuid::now_v7().to_string());
+  fields.insert("enabled".into(), "true".into());
+  if let Some(entry) = editing {
+    fields.extend(entry.fields());
+  }
+  let is_editing = editing.is_some()
+    || posted.as_ref().is_some_and(|posted_fields| {
+      entries
+        .iter()
+        .any(|entry| entry.id.to_string() == model::value(posted_fields, "entry_id"))
+    });
+  if let Some(posted) = posted {
+    fields = posted;
+  }
+  let items: Vec<_> = entries
+    .iter()
+    .map(|entry| views::KnowledgeItemView {
+      id: entry.id.to_string(),
+      topic: entry.topic.clone(),
+      question: entry.question.clone(),
+      answer: entry.answer.clone(),
+      enabled: entry.enabled,
+    })
+    .collect();
+  let status = if errors.is_empty() {
+    StatusCode::OK
+  } else {
+    StatusCode::UNPROCESSABLE_ENTITY
+  };
+  (
+    status,
+    Html(views::knowledge(views::KnowledgePageView {
+      csrf_token: &session.csrf,
+      fields: &fields,
+      entries: &items,
+      editing: is_editing,
+      errors: &errors,
+      message,
+    })),
+  )
+    .into_response()
+}
+
+async fn knowledge_page(
+  State(state): State<AppState>,
+  Extension(session): Extension<DoctorSession>,
+  Query(query): Query<KnowledgeQuery>,
+) -> Response {
+  let message = match query.saved.as_deref() {
+    Some("1") => Some("Respuesta aprobada guardada."),
+    Some("toggled") => Some("Estado de la respuesta actualizado."),
+    Some("deleted") => Some("Respuesta aprobada eliminada."),
+    _ => None,
+  };
+  render_knowledge(
+    &state,
+    &session,
+    None,
+    vec![],
+    message,
+    query.entry.as_deref(),
+  )
+  .await
+}
+
+async fn save_knowledge(
+  State(state): State<AppState>,
+  Extension(session): Extension<DoctorSession>,
+  Form(fields): Form<Fields>,
+) -> Response {
+  let now = state.clock.now_millis();
+  match model::KnowledgeEntry::parse(&fields, now) {
+    Ok(entry) => match store::save_knowledge_entry(&state.db, entry).await {
+      Ok(()) => Redirect::to("/settings/knowledge?saved=1").into_response(),
+      Err(_) => unavailable(),
+    },
+    Err(errors) => render_knowledge(&state, &session, Some(fields), errors, None, None).await,
+  }
+}
+
+async fn toggle_knowledge(State(state): State<AppState>, Path(id): Path<uuid::Uuid>) -> Response {
+  match store::toggle_knowledge_entry(&state.db, id, state.clock.now_millis()).await {
+    Ok(true) => Redirect::to("/settings/knowledge?saved=toggled").into_response(),
+    Ok(false) => (StatusCode::NOT_FOUND, "Respuesta no encontrada.").into_response(),
+    Err(_) => unavailable(),
+  }
+}
+
+async fn delete_knowledge(State(state): State<AppState>, Path(id): Path<uuid::Uuid>) -> Response {
+  match store::delete_knowledge_entry(&state.db, id).await {
+    Ok(true) => Redirect::to("/settings/knowledge?saved=deleted").into_response(),
+    Ok(false) => (StatusCode::NOT_FOUND, "Respuesta no encontrada.").into_response(),
+    Err(_) => unavailable(),
   }
 }

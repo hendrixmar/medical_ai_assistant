@@ -6,6 +6,7 @@ pub mod google_calendar;
 pub mod health;
 pub mod payments;
 pub(crate) mod practice;
+pub mod stripe;
 pub mod whatsapp;
 
 use axum::Router;

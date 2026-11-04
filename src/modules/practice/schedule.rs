@@ -66,6 +66,8 @@ pub struct Schedule {
   pub grid_minutes: i32,
   pub horizon_days: i32,
   pub cancellation_policy: String,
+  pub reminder_72h_enabled: bool,
+  pub reminder_24h_enabled: bool,
   pub reminder_2h_enabled: bool,
 }
 
@@ -99,6 +101,28 @@ impl Schedule {
         }
       }
     });
+    let reminder_72h_enabled = match value(fields, "reminder_72h_enabled") {
+      "" | "false" => false,
+      "true" => true,
+      _ => {
+        errors.push((
+          "reminder_72h_enabled".into(),
+          "Elige si quieres enviar un recordatorio 72 horas antes.".into(),
+        ));
+        false
+      }
+    };
+    let reminder_24h_enabled = match value(fields, "reminder_24h_enabled") {
+      "" | "true" => true,
+      "false" => false,
+      _ => {
+        errors.push((
+          "reminder_24h_enabled".into(),
+          "Elige si quieres enviar el recordatorio 24 horas antes.".into(),
+        ));
+        true
+      }
+    };
     let reminder_2h_enabled = match value(fields, "reminder_2h_enabled") {
       "" | "false" => false,
       "true" => true,
@@ -118,6 +142,8 @@ impl Schedule {
       grid_minutes: number(fields, "grid_minutes", true, &mut errors),
       horizon_days: number(fields, "horizon_days", true, &mut errors),
       cancellation_policy: text(fields, "cancellation_policy", 4000, true, &mut errors),
+      reminder_72h_enabled,
+      reminder_24h_enabled,
       reminder_2h_enabled,
     };
     if errors.is_empty() {

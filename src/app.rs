@@ -14,6 +14,7 @@ pub struct AppState {
   pub clock: std::sync::Arc<dyn modules::doctor::Clock>,
   pub waha: Option<modules::whatsapp::client::Client>,
   pub google: Option<modules::google_calendar::client::Client>,
+  pub stripe: Option<modules::stripe::client::Client>,
 }
 
 pub fn router(cfg: Config, db: Db) -> Router {
@@ -28,7 +29,7 @@ pub fn router_with_clock(
   compose(cfg, db, clock).0
 }
 
-/// Router and process workers share one HTTP pool. Construction starts no tasks.
+/// Router-only constructor; construction starts no tasks.
 pub fn compose(
   cfg: Config,
   db: Db,
@@ -38,6 +39,22 @@ pub fn compose(
   Option<modules::whatsapp::client::Client>,
   Option<modules::google_calendar::client::Client>,
 ) {
+  let (router, waha, google, _) = compose_with_stripe(cfg.clone(), db, clock, cfg.stripe.clone());
+  (router, waha, google)
+}
+
+/// Router and process workers share provider clients. Construction starts no tasks.
+pub fn compose_with_stripe(
+  cfg: Config,
+  db: Db,
+  clock: std::sync::Arc<dyn modules::doctor::Clock>,
+  stripe_config: Option<modules::stripe::config::StripeConfig>,
+) -> (
+  Router,
+  Option<modules::whatsapp::client::Client>,
+  Option<modules::google_calendar::client::Client>,
+  Option<modules::stripe::client::Client>,
+) {
   let waha = cfg.waha.as_ref().map(|config| {
     modules::whatsapp::client::Client::new(config).unwrap_or_else(|message| panic!("{message}"))
   });
@@ -45,12 +62,16 @@ pub fn compose(
     modules::google_calendar::client::Client::new(config)
       .unwrap_or_else(|message| panic!("{message}"))
   });
+  let stripe = stripe_config.as_ref().map(|config| {
+    modules::stripe::client::Client::new(config).unwrap_or_else(|message| panic!("{message}"))
+  });
   let app_state = AppState {
     db,
     cfg,
     clock,
     waha: waha.clone(),
     google: google.clone(),
+    stripe: stripe.clone(),
   };
 
   // Middleware that adds high level tracing to a Service.
@@ -103,7 +124,7 @@ pub fn compose(
     .layer(request_id_layer)
     .layer(axum::middleware::from_fn(callback_envelope))
     .with_state(app_state);
-  (router, waha, google)
+  (router, waha, google, stripe)
 }
 
 // Outside authentication, route rejections, security headers AND the global timeout.

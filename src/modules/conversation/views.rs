@@ -24,6 +24,8 @@ pub enum AttentionKind {
   ReceiptSelection,
   ReceiptClarification,
   RefundDue,
+  StripePaymentLate,
+  StripePaymentDuplicate,
   CalendarConflict,
   CalendarSyncFailed,
   CalendarAvailabilityUnavailable,
@@ -263,7 +265,15 @@ fn attention_content(view: &DashboardView<'_>) -> String {
         ),
         AttentionKind::RefundDue => (
           "Reembolso pendiente",
-          "El reembolso debe gestionarse fuera del sistema; no se inició ningún reembolso automático.",
+          "El reembolso debe gestionarse fuera del sistema; para pagos con tarjeta, usa el panel de Stripe. No se inició ningún reembolso automático.",
+        ),
+        AttentionKind::StripePaymentLate => (
+          "Pago con tarjeta tardío",
+          "Stripe registró un pago cuando la cita ya no podía confirmarse. El doctor debe reembolsar desde el panel de Stripe o contactar al paciente; el sistema no hizo ningún reembolso.",
+        ),
+        AttentionKind::StripePaymentDuplicate => (
+          "Posible pago duplicado con tarjeta",
+          "La cita ya figuraba pagada cuando llegó este pago con tarjeta. Reembolsa uno desde el panel de Stripe y contacta al paciente; no se realizó ningún reembolso automático.",
         ),
         AttentionKind::CalendarConflict => (
           "Conflicto en un calendario",

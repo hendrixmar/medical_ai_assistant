@@ -61,7 +61,8 @@ authenticated flow with explicit calendar reselection. Neither operation is
 compromise remediation or provider grant revocation.
 
 Production destinations are compiled fixed HTTPS origins:
-`accounts.google.com/o/oauth2/v2/auth`, `oauth2.googleapis.com/token`, and
+`accounts.google.com/o/oauth2/v2/auth`, `oauth2.googleapis.com/token` (and its sibling
+`/revoke`), and
 `www.googleapis.com/calendar/v3`. TLS verification stays enabled. There are no proxies,
 redirect following, implicit HTTP retries, provider-fixture environment variables or
 production debug routes. Test-only endpoint injection exists solely in `cfg(test)`.
@@ -76,6 +77,7 @@ Use native protected `/settings/google` from Configuración → Conexiones.
 | --- | --- |
 | `GET /settings/google` | Fresh complete CalendarList, local outcomes and original cleanup records; no remote event mutation. Refresh is allowed. Cleanup pagination uses `cleanup_page`, 25 records per page. |
 | `POST /settings/google/connect` | Persist latest session-bound OAuth attempt, then redirect to Google. Exactly five starts per rolling hour across sessions/restart. |
+| `POST /settings/google/disconnect` | Clears stored credentials, selection and probe pointer and bumps the generation in one transaction, supersedes pending OAuth attempts, then asks Google to revoke the refresh token. The notice claims revocation only on Google's success (or `invalid_token`); otherwise it points the Doctor to myaccount.google.com/permissions. Existing calendar events are not deleted; video booking stops until a new connection and reselection. |
 | `GET /settings/google/callback` | Strict bounded raw query, live initiating session, hashed state, single-use consumption, code exchange and fenced grant installation. |
 | `POST /settings/google/calendars` | Fresh list and explicit zero–100 Blocking Calendars, all free/busy validations, atomic selection-version CAS. |
 | `POST /settings/google/probe` | Persist one probe intent/immutable target. No event HTTP in this handler. Form includes expected current probe ID; accepted forms cannot be replayed to create another event. |
@@ -339,6 +341,13 @@ push or deployment occurred. Still required with explicit operator authorization
   project user cap and 100 refresh tokens/account/client are different limits.
 - Actual approved-scope manager-calendar/freebusy access and one expressly authorized
   real create/read/Meet/delete check, preserving any unresolved cleanup evidence.
+
+Credential-free endpoint smoke, 2026-10-23: a throwaway test (removed afterwards) used the
+production `Client` with a synthetic client ID/secret and no Google account. Real TLS reached
+all three fixed origins; token exchange classified as `Rejected`, refresh and `calendarList`
+(bogus bearer) as `Unauthorized`; the authorization URL was parsed by Google, which refused
+only `redirect_uri` for the unregistered client (`secure-response-handling`). This proves
+transport and error classification, not consent, scope approval or event access.
 
 Live Google/WAHA calls, Console changes, production key provisioning, deployment, public
 tunnels, patient data and real event mutation are excluded from routine validation.
