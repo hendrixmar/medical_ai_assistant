@@ -8,7 +8,7 @@ The current local application includes a protected dashboard with attention and
 upcoming Appointments; Contact inbox and history; Appointment lists, details and
 history; deterministic WhatsApp booking, rescheduling and cancellation; protected
 Receipt copying, review and download; Doctor Payment Verification for bank
-transfers; optional Stripe Connect card payments with server-side confirmation;
+transfers; optional Mercado Pago Checkout Pro payments with server-side confirmation;
 Google Calendar availability and event/Meet synchronization; reminders; Doctor Number
 verification, read-only agenda answers and notifications; and Contact Takeover.
 An optional Mercury 3 decision agent (`INCEPTION_API_KEY`, default model `mercury-3`,
@@ -18,11 +18,11 @@ via `decidir`: it never decides availability, payment, or business mutations.
 This is **not a clinical record, legally approved service, or production-ready
 release**. Patient names belong to one Appointment, not a longitudinal registry.
 A Receipt is transfer evidence, never proof funds arrived. The Doctor's explicit
-Payment Verification or a server-confirmed matching Stripe card payment marks a
+Payment Verification or a server-confirmed matching Mercado Pago payment marks a
 video Appointment paid. Outbound WhatsApp text and Takeover default OFF. The privacy
 notice is provisional. Synthetic/local evidence does not establish live provider
-acceptance. Real WAHA pairing and storage recovery, Google consent, Stripe platform
-setup and live card acceptance remain unperformed. Production deployment, Doctor
+acceptance. Real WAHA pairing and storage recovery, Google consent, Mercado Pago
+sandbox/live payment and refund acceptance remain unperformed. Production deployment, Doctor
 enrollment, legal approval, and release also remain open.
 
 Issue labels #4–#9 below refer to historical implementation/evidence slices, not
@@ -56,8 +56,8 @@ Never commit `.env` or credentials.
 | `DATABASE_TIMEOUT` | `5` seconds | Database connection timeout |
 | `DATABASE_RUN_MIGRATIONS` | sample `true`; runtime development `true`, production `false` | Whether server startup runs migrations; Compose explicitly sets `true` |
 | `BCRYPT_COST` | `12` | Password-hashing cost, 4–31; retain 12 or stronger outside isolated tests |
-| `PUBLIC_ORIGIN` | absent | Exact canonical HTTPS browser origin; required for Doctor login, Stripe, and provider OAuth/outbound |
-| `STRIPE_SECRET_KEY` | absent | Optional server-only Stripe secret or restricted key (`sk_` or `rk_`); requires canonical HTTPS `PUBLIC_ORIGIN` |
+| `PUBLIC_ORIGIN` | absent | Exact canonical HTTPS browser origin; required for Doctor login, Mercado Pago, and provider OAuth/outbound |
+| `MERCADO_PAGO_ACCESS_TOKEN` | absent | Optional server-only access token of the Doctor's own Mercado Pago application (`APP_USR-` or legacy `TEST-`); requires canonical HTTPS `PUBLIC_ORIGIN` |
 | `WAHA_BASE_URL` | absent | Optional canonical WAHA origin; HTTPS except explicit loopback HTTP |
 | `WAHA_API_KEY` | absent | Plain server-only API credential; no default |
 | `WAHA_WEBHOOK_HMAC_KEY` | absent | Operator-provisioned literal UTF-8 secret of at least 32 characters |
@@ -79,10 +79,10 @@ Google's three values follow the same absent-or-complete rule and require canoni
 HTTPS `PUBLIC_ORIGIN`. `INCEPTION_API_KEY` enables Mercury 3 (`MERCURY_MODEL`
 defaults to `mercury-3`; setting `MERCURY_MODEL` without `INCEPTION_API_KEY` fails
 startup). Claude's key and explicit model remain an optional nonempty fallback
-pair, with no fallback model. Stripe is disabled when `STRIPE_SECRET_KEY` is absent.
+pair, with no fallback model. Mercado Pago is disabled when `MERCADO_PAGO_ACCESS_TOKEN` is absent.
 When supplied, it must be printable, contain no whitespace, be at most 255
-characters, and start with `sk_` or `rk_`; Stripe also requires canonical HTTPS
-`PUBLIC_ORIGIN`. Keep the key in the private server environment, never in source or
+characters, and start with `APP_USR-` or `TEST-`; Mercado Pago also requires canonical HTTPS
+`PUBLIC_ORIGIN`. Keep the token in the private server environment, never in source or
 this sample. Never add empty `KEY=` entries as a substitute for omitting an optional
 setting. No provider endpoint override is available.
 
@@ -120,21 +120,23 @@ migrations currently compose the local schema:
    together, or 48-byte ciphertext + 12-byte nonce); existing rows stay NULL/NULL
    until the first offline Doctor key rotation. Its down operation refuses
    destructive removal.
-12. `m202610240001_stripe_connect`: singleton connected-account state and
-   appointment/revision Price and Payment Link records for server-side payment
-   polling; the tables store no patient or Contact data. Its down operation refuses
-   to discard Stripe connection or payment evidence.
-13. `m202610240002_practice_and_agenda_extensions`: configurable 72-hour and
+12. `m202610240002_practice_and_agenda_extensions`: configurable 72-hour and
    24-hour Reminder toggles on `practice` (`reminder_72h_enabled=false`,
    `reminder_24h_enabled=true`) and Doctor-approved verbatim `knowledge_entries`
    for FAQ and professional-profile answers. Its down operation refuses
    destructive removal.
+13. `m202611040001_mercado_pago`: singleton token-check state, appointment/revision
+   Checkout Pro preferences and one row per Mercado Pago payment seen (outcome,
+   provider status, Doctor-requested refund state). The tables store no patient or
+   Contact data. Its down operation refuses to discard payment evidence. A database
+   that applied the never-released Stripe migration is rejected by SeaORM and must
+   be recreated (development only).
 
 `processing_jobs` has exactly three constrained kinds:
 `prepare_inbox`, `process_conversation`, `send_outbox`. The separate
 `appointment_jobs` table has `calendar_sync`, `calendar_cancel`, `reminders`,
-`review`, `expiry`, `conflict` and `stripe_link`. No migration rollback may discard
-Doctor, Practice, Appointment, Receipt, Stripe connection or payment evidence,
+`review`, `expiry`, `conflict`, `mp_preference` and `mp_refund`. No migration rollback may discard
+Doctor, Practice, Appointment, Receipt, Mercado Pago payment evidence,
 recovery or messaging evidence. Migrations are idempotently applied by SeaORM;
 re-running them preserves saved records.
 
@@ -161,15 +163,14 @@ Unknown legacy migration history fails startup rather than being rewritten.
   exact-Origin checks; it is not a registration flow.
 - The Doctor-protected GET routes include `/dashboard`, `/settings`,
   `/settings/knowledge`, `/settings/whatsapp`, `/settings/whatsapp/qr`,
-  `/settings/doctor-number`, `/settings/google`, `/settings/stripe`,
-  `/settings/stripe/return`, `/settings/stripe/refresh`, `/contacts`,
+  `/settings/doctor-number`, `/settings/google`, `/settings/mercado-pago`, `/contacts`,
   `/contacts/{id}`, `/appointments` (including `?view=day|week|month`),
   `/appointments/{id}` and `/dashboard/payments/receipts/{id}` plus its `/file` route.
 - Protected POST routes include `/logout`; `/settings/{details,services,schedule,payments,knowledge}`;
   `/settings/knowledge/{id}/{toggle,delete}`; `/settings/whatsapp/start`;
   `/settings/whatsapp/request-code`; `/settings/doctor-number/challenge`;
   `/settings/google/{connect,disconnect,calendars,probe}` and
-  `/settings/google/probes/{id}/cleanup`; `/settings/stripe/{connect,disconnect}`;
+  `/settings/google/probes/{id}/cleanup`; `/appointments/{id}/mercado-pago/{payment}/refund`;
   `/contacts/{id}/takeover/end`; `/followups/{id}/resolve`;
   `/appointments/create`; `/appointments/{id}/{cancel,reschedule}` and
   `/appointments/{id}/refund/resolve`;
@@ -219,13 +220,13 @@ the file later does not rotate existing database passwords.
 
 `APP_PROVIDER_ENV_FILE` is a **required Compose path**, not a provider credential:
 the file must exist, and the path should be absolute and outside the repository.
-It may be a zero-byte file when no optional Google, Mercury, Claude or Stripe provider is
+It may be a zero-byte file when no optional Google, Mercury, Claude or Mercado Pago provider is
 configured. That is different from putting an empty `GOOGLE_*`, `INCEPTION_API_KEY`,
-`MERCURY_MODEL`, `CLAUDE_*` or `STRIPE_SECRET_KEY` entry inside it: optional keys
+`MERCURY_MODEL`, `CLAUDE_*` or `MERCADO_PAGO_ACCESS_TOKEN` entry inside it: optional keys
 must be absent or supplied as their complete nonempty set/pair. Keep `DOCTOR_TOTP_KEY` stable and escrow it
 separately. If Google is enabled, `GOOGLE_TOKEN_KEY` is also stable and separately
-escrowed; it must differ from the Doctor key. Store `STRIPE_SECRET_KEY` only in this
-app-only file when Stripe is enabled. `WAHA_OUTBOUND_ENABLED=false` and
+escrowed; it must differ from the Doctor key. Store `MERCADO_PAGO_ACCESS_TOKEN` only in this
+app-only file when Mercado Pago is enabled. `WAHA_OUTBOUND_ENABLED=false` and
 `WAHA_TAKEOVER_ENABLED=false` are the explicit safe defaults; neither follows from
 pairing or saving settings.
 
@@ -324,14 +325,12 @@ publish Postgres, WAHA or the app directly to the public Internet.
    capability check. The app requests only the approved scopes. A test or saved
    credential is not live Google acceptance; preserve cleanup evidence and the
    independent Google encryption key.
-4. **Stripe Connect:** Read the [Stripe Connect operations and evidence record](docs/integrations/stripe.md)
-   before setup. Confirm that Connect is enabled and the platform can onboard
-   connected accounts in Mexico. Confirm that the Doctor's account has active
-   `card_payments` and `charges_enabled=true`.
-   Store the server-only `STRIPE_SECRET_KEY` in the app-only provider file. Use a
-   restricted key. Follow the integration record to set operation permissions and
-   verify them with a sandbox key. No live Stripe setup or card acceptance has
-   been recorded.
+4. **Mercado Pago:** Read the [Mercado Pago spec and operations record](docs/integrations/mercado-pago.md)
+   before setup. The Doctor creates a Checkout Pro application in their own Mercado
+   Pago account and passes the access token privately; the operator stores it as
+   `MERCADO_PAGO_ACCESS_TOKEN` in the app-only provider file. First verify the flow
+   in a staging deployment with a test-seller token and a test buyer. No sandbox or
+   live payment or refund acceptance has been recorded.
 5. **Messaging/legal gate:** Text dispatch and Takeover remain OFF by default.
    Changing `WAHA_OUTBOUND_ENABLED` or `WAHA_TAKEOVER_ENABLED` is a separate
    operator release decision, requires consistent restarts and approved live
@@ -547,7 +546,7 @@ technical bound rather than choosing an operational policy. These values are not
 a real Practice's configuration. Completion is derived from valid saved fields and
 Services, not a posted completion flag. The Conexiones footer links to actual WAHA
 connection status, Doctor Number verification, Google Calendar connection/capability
-checks, and Stripe Connect card-payment settings.
+checks, and the Mercado Pago payment status.
 WhatsApp live-provider acceptance is separate from configuration completion. Saving
 settings changes Practice configuration only; it does not create an Appointment or
 calculate an individual time's availability/deadline. Appointment and video
@@ -587,43 +586,49 @@ instructions and buffers are snapshots; changes to current Practice settings do
 not rewrite an existing Appointment.
 
 Video begins as `awaiting_payment` / `awaiting_receipt`. The Contact receives
-snapshotted transfer instructions and a Receipt Deadline. If Stripe is ready when
-the Appointment is booked, a durable job creates a card-only Payment Link after
-the booking transaction commits. The job adds the link to the existing WhatsApp
-payment instructions. A Stripe outage does not block booking or remove bank
-transfer as a fallback.
+snapshotted transfer instructions and a Receipt Deadline. If Mercado Pago is
+configured and its token was accepted when the Appointment is booked, a durable
+job creates a Checkout Pro preference (cards and Mercado Pago balance only, expiring
+at the Receipt Deadline) after the booking transaction commits and sends its link
+with the WhatsApp payment instructions. A Mercado Pago outage does not block booking
+or remove bank transfer as a fallback.
 
-The worker polls the connected account's Checkout Sessions. It confirms payment
-only when the session is complete and paid, its currency is `mxn`, and its total
-matches the Appointment's snapshotted price. Appointment History records actor
-`System` for the confirmation. Browser return pages do not confirm payment.
+The worker polls Mercado Pago's payment search by the preference's
+`external_reference` and re-reads each approved payment. It confirms payment only
+when the status is `approved`, the currency is `MXN`, the amount equals the
+Appointment's snapshotted price, the reference matches and the collector is the
+Doctor's account. Appointment History records actor `System` for the confirmation.
+Browser return pages do not confirm payment.
 
 A Receipt is copied as transfer evidence and can be reviewed or downloaded only
 through the protected Doctor dashboard. A timely Receipt must also arrive before
 Hold expiry to move the Appointment to `under_review` and protect its Hold while
 the Doctor reviews it. The Receipt never verifies money. For a bank transfer, only
 the authenticated Doctor's explicit Payment Verification marks Payment `verified`.
-For a Stripe card payment, the System does so only after the server-side match.
+For a Mercado Pago payment, the System does so only after the server-side match.
 Rejection, replacement Receipt, late Receipt, clarification, and Doctor disposition
 remain explicit history and attention decisions.
 A pending-payment reschedule keeps the same Appointment, Payment Link, and
 original Receipt Deadline. It does not restart that window. A Receipt that arrives
 after the Hold expires remains late, even if WhatsApp says it was sent before the
-deadline. It never silently restores the old slot. Stripe Payment Links have no
-built-in expiry. The worker deactivates them at the Receipt Deadline, on
-cancellation or expiry, after payment, or when the Doctor rejects a Receipt and
-opens a new Receipt window.
+deadline. It never silently restores the old slot. Preferences expire natively at
+the Receipt Deadline; the worker also expires them early on cancellation or
+expiry, after payment, or when the Doctor rejects a Receipt and opens a new Receipt
+window, and keeps checking for late payments for two hours.
 
 Google availability or Calendar failures remain pending or failed. The app does
 not invent a Meet URL. A video Appointment reminder includes a Meet link only
 after Google creates a conference, Calendar synchronization succeeds, and Payment
 is verified. Cancellation after verified payment creates a `refund_due` Attention
-Item. The application never issues a refund. The Doctor handles the refund outside
-the app, then uses **Marcar reembolso como resuelto**. That idempotent action
-records history and resolves attention once. It does not move funds or reverse
-verified Payment. The Doctor handles a card refund in Stripe's Dashboard. Late or
-duplicate Stripe payments also need Doctor action. The application never refunds
-them automatically.
+Item. The application never refunds automatically. For a Mercado Pago payment the
+Doctor may press **Reembolsar con Mercado Pago** on the Appointment; a durable job
+requests the full refund with a fixed idempotency key, records history, resolves the
+Attention Item and notifies the Contact. Late, duplicate and mismatched Mercado
+Pago payments offer the same action. If Mercado Pago rejects the refund, the
+Attention Item stays. For transfers (or a rejected refund) the Doctor refunds
+outside the app, then uses **Marcar reembolso como resuelto**. Neither action
+reverses verified Payment; refunds or chargebacks made outside the app raise an
+Attention Item.
 
 The system schedules a 24-hour Reminder for eligible Appointments and an optional
 2-hour Reminder when the Doctor enables it. The app records an explicit attendance
@@ -715,17 +720,16 @@ submitted challenge code under its separate inbox retention policy; do not claim
 that every stored copy is encrypted or log it. Real sender/`me` evidence, pairing,
 privacy/consent and provider launch gates remain open.
 
-### Stripe Connect card payments (live acceptance remains open)
+### Mercado Pago Checkout Pro payments (sandbox and live acceptance remain open)
 
-See the [Stripe Connect operations and evidence record](docs/integrations/stripe.md).
-The Doctor links a Stripe account through Stripe-hosted onboarding in
-**Configuración → Conexiones**; the Doctor never enters an API key. The app creates
-Payment Links for card-only direct charges on that connected account, with no
-application fee. Bank transfer and Receipt review remain available. The worker
-confirms payments by polling Stripe because the app's origin is private to the
-tailnet; no Stripe webhooks are configured. Synthetic fixture behavior does not
-prove platform eligibility, live restricted-key permissions, real card acceptance
-or production deployment.
+See [ADR 0006](docs/adr/0006-mercado-pago-online-payment.md) and the
+[Mercado Pago spec and operations record](docs/integrations/mercado-pago.md). The
+deployment uses the Doctor's own access token (no OAuth, no platform fee); money
+lands in the Doctor's account. **Configuración → Mercado Pago** shows the read-only
+token check; the token is never displayed. The worker confirms payments by polling
+because the app's origin is private to the tailnet; no webhook is configured.
+Synthetic fixture behavior does not prove that Mercado Pago accepts the requests,
+the excluded payment types, real payments, refunds or production deployment.
 
 ### Google Calendar and Meet (#9 historical slice; live acceptance still open)
 
@@ -767,8 +771,8 @@ cargo test --locked
 
 Full local acceptance requires tests for Doctor, Practice, WAHA and Contact
 conversations, and Appointments with payments and Receipts. It also requires
-Stripe payment, Calendar and Meet, reminder, recovery, and retention tests against
-dedicated real Postgres. The Stripe client fixture alone is not database-backed
+Mercado Pago payment, Calendar and Meet, reminder, recovery, and retention tests against
+dedicated real Postgres. The Mercado Pago client fixture alone is not database-backed
 payment acceptance. Do not treat an ignored test as a pass.
 
 ### Disposable Postgres fixture
@@ -812,10 +816,10 @@ need no live WhatsApp, Google, or other provider credentials.
 
 Google tests use synthetic OAuth and Calendar HTTP with real worker and database
 crash boundaries. See the integration record for single-dispatch and cleanup
-evidence. Stripe client tests use a local Axum fixture to check configuration and
-API request construction. See the [Stripe evidence record](docs/integrations/stripe.md).
-The fixture does not contact Stripe or establish live account eligibility,
-restricted-key permissions, or payment acceptance. Provider-dependent route and
+evidence. Mercado Pago client tests use a local Axum fixture to check configuration and
+API request construction. See the [Mercado Pago record](docs/integrations/mercado-pago.md).
+The fixture does not contact Mercado Pago or establish account eligibility,
+token permissions, payment or refund acceptance. Provider-dependent route and
 streamed-body limits, captured secret-safe logs, callback timeout envelopes, exact
 scopes, credential rotation, and original-target cleanup are exercised without
 production fixtures.

@@ -93,7 +93,7 @@ An image or PDF a Contact submits as evidence of a bank transfer for a video App
 _Avoid_: proof of payment, payment
 
 **Payment Link**:
-A Stripe-hosted card-payment URL for one video Appointment. The System confirms payment only after Stripe reports a paid session that matches the Appointment's stored amount.
+A Mercado Pago Checkout Pro URL (cards or Mercado Pago balance) for one video Appointment, expiring at its Receipt Deadline. Not proof of payment: the System confirms payment only after Mercado Pago's API reports an approved payment that matches the Appointment's reference, stored amount, MXN and the Doctor's account.
 
 **Payment Reference**:
 A short code unique to one Appointment that the Contact puts in the bank transfer's *concepto*, so the Doctor can match the deposit.
@@ -109,7 +109,7 @@ _Avoid_: expired receipt
 
 **Payment Verification** (UI: *Confirmar pago recibido*):
 The Doctor's explicit Payment Verification states that bank-transfer funds arrived.
-The System confirms a matching Stripe card payment for the Appointment.
+The System confirms a matching Mercado Pago payment for the Appointment.
 Either source marks the video Appointment paid.
 A Receipt remains transfer evidence only. It never proves funds arrived.
 Rejecting a Receipt (UI: *No recibí el pago*) is a separate Doctor action.

@@ -10,7 +10,7 @@ Use for Rust/API/domain, authentication, integration, UI, test, or release-gate 
 ## Read the authoritative sources
 
 - Read root `AGENTS.md`, `CONTEXT.md`, relevant `docs/adr/`, and the matching README section before changing a contract. Use `docs/agents/domain.md` for vocabulary/ADR rules; read `docs/agents/issue-tracker.md` or `triage-labels.md` before tracker work.
-- For integration changes, read the specific evidence/operations record first: `docs/integrations/waha.md`, `waha-messaging.md`, `doctor-number.md`, `conversation-outbox.md`, or `google-calendar.md`. Distinguish synthetic/local evidence from live-provider acceptance.
+- For integration changes, read the specific evidence/operations record first: `docs/integrations/waha.md`, `waha-messaging.md`, `doctor-number.md`, `conversation-outbox.md`, `google-calendar.md`, or `mercado-pago.md`. Distinguish synthetic/local evidence from live-provider acceptance.
 - Inspect `src/modules/`, `src/database/`, migrations, and the relevant tests. Preserve existing Rust/Cargo.lock; run project commands from repository root.
 
 ## Stack and verification
@@ -25,5 +25,5 @@ Use for Rust/API/domain, authentication, integration, UI, test, or release-gate 
 
 - This is a secure dashboard foundation for one Practice and one Doctor per deployment, not a clinical record or ready product release. Do not create longitudinal patient records or imply appointment management is available.
 - A Patient is named on one Appointment only; a Contact may book for several Patients. Keep `CONTEXT.md` vocabulary and the single-Practice ADR.
-- A Receipt is transfer evidence, never proof funds arrived. A Payment Link is not proof either. A video Appointment is paid only after the Doctor's explicit Payment Verification or System-confirmed Stripe card payment. CLABE is 18 ASCII digits stored as text, format-only.
-- Never log, print, commit, or send passwords, TOTP/encryption keys, Stripe API keys, enrollment URIs, cookies, tokens, OAuth credentials, receipt content, or patient/contact data. `bootstrap-doctor` enrollment and deployment remain operator-only; do not automate them or use a real provider during tests.
+- A Receipt is transfer evidence, never proof funds arrived. A Payment Link is not proof either. A video Appointment is paid only after the Doctor's explicit Payment Verification or System-confirmed matching Mercado Pago payment. CLABE is 18 ASCII digits stored as text, format-only.
+- Never log, print, commit, or send passwords, TOTP/encryption keys, Mercado Pago access tokens, enrollment URIs, cookies, tokens, OAuth credentials, receipt content, or patient/contact data. `bootstrap-doctor` enrollment and deployment remain operator-only; do not automate them or use a real provider during tests.

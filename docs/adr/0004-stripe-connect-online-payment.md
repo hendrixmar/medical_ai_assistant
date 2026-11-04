@@ -1,5 +1,7 @@
 # Use Stripe Connect Payment Links for optional video card payment
 
+Status: **superseded** by [ADR 0006](0006-mercado-pago-online-payment.md) on 2026-11-04. The Stripe module was never released and has been removed.
+
 A video Appointment can be paid by bank transfer or card. The Doctor explicitly verifies a bank transfer. The System confirms a matching Stripe card payment. The Practice uses one Stripe platform account. Each Doctor connects their own Stripe account through Stripe-hosted onboarding. The Doctor never receives or enters the platform API key.
 
 The connected account gives the Doctor full Stripe Dashboard access. Stripe collects account requirements. Stripe fees go to the connected account, and Stripe takes payment losses. The platform takes no application fee. Direct charges credit the Doctor's account. Bank transfer remains available as a fallback.

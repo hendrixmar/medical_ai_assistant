@@ -1,6 +1,6 @@
 # Use Mercado Pago Checkout Pro with the Doctor's own access token for optional video payment
 
-Status: **proposed** (2026-11-04). On approval it supersedes [ADR 0004](0004-stripe-connect-online-payment.md). Until then ADR 0004 still describes the code on this branch.
+Status: **accepted** (Hendrik, 2026-11-04: D1–D5 as recommended). Supersedes [ADR 0004](0004-stripe-connect-online-payment.md).
 
 Hendrik asked to replace Stripe with Mercado Pago as the online payment option for video Appointments. Bank transfer with Receipt review and the Doctor's explicit Payment Verification stays unchanged and remains the fallback. The full integration contract, test plan and open decisions are in [docs/integrations/mercado-pago.md](../integrations/mercado-pago.md).
 

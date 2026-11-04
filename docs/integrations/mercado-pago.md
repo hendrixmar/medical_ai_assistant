@@ -1,6 +1,6 @@
 # Mercado Pago Checkout Pro payments (spec)
 
-Status: **proposed spec, not implemented** (2026-11-04). Decision record: [ADR 0006](../adr/0006-mercado-pago-online-payment.md). Nothing here has been tested against Mercado Pago. This record lists operator requirements and provider facts from Mercado Pago Developers (MX). It does not record acceptance of any account, token, payment, refund or webhook.
+Status: **accepted and implemented on `feat/mercado-pago`** (2026-11-04; D1–D5 approved as recommended, so the webhook in 4.3 is **not** implemented). Decision record: [ADR 0006](../adr/0006-mercado-pago-online-payment.md). Nothing here has been tested against Mercado Pago; the evidence is the synthetic fixture in `src/modules/mercado_pago/`. This record lists operator requirements and provider facts from Mercado Pago Developers (MX). It does not record acceptance of any account, token, payment, refund or webhook.
 
 Bank transfer, Receipt review and the Doctor's explicit Payment Verification do not change. Mercado Pago is an optional second way to pay a video Appointment. With no token configured the app behaves as it does today without Stripe.
 
@@ -172,7 +172,7 @@ If D4 is rejected, skip 4.5 entirely. The Doctor refunds in Mercado Pago and use
 | --- | --- |
 | `src/modules/mercado_pago/` (new) | `config.rs`, `client.rs` (preferences POST/PUT, payments search/get, refunds, users/me), `store.rs` (`schedule_preference`), `worker.rs`, `http.rs` (settings page, refund action, optional webhook), `views.rs`, `tests.rs`, `worker_tests.rs`. Port the Stripe worker structure, which already solves locking, fencing and deactivation. |
 | `src/modules/stripe/` | Delete. |
-| Migrations | Delete `m202610240001_stripe_connect.rs` + `stripe_connect.sql`. Add `m2026110xxxxx_mercado_pago.rs` (section 3) with a guard that fails if `seaql_migrations` contains `m202610240001_stripe_connect`, so a dev database that ran the WIP Stripe migration is reset instead of silently diverging. |
+| Migrations | Delete `m202610240001_stripe_connect.rs` + `stripe_connect.sql`. Add `m202611040001_mercado_pago.rs` (section 3). No explicit guard: SeaORM already refuses to run against a database that applied a migration missing from the list, so a dev database that ran the WIP Stripe migration must be recreated. |
 | `appointments/booking.rs`, `store.rs`, `timers.rs`, `payments/actions.rs` | `stripe_payment_links` → `mercado_pago_preferences`; `stripe::store::schedule_link` → `mercado_pago::store::schedule_preference`. |
 | `conversation/views.rs`, `conversation/http.rs` | Renamed or new attention kinds and Spanish copy referring to Mercado Pago. |
 | `doctor/http.rs` | Remove `/settings/stripe*` routes and the `connect.stripe.com` CSP source; add `/settings/mercado-pago`. |
@@ -235,3 +235,11 @@ Verified on 2026-11-04 in this repository: `git log --all -- src/modules/stripe 
 | D3 | Online methods: immediate only (cards + account money), or also OXXO/SPEI. | **Immediate only.** The Receipt window is minutes (default 120); Mercado Pago recommends ≥3 days for cash. Bank transfer already covers SPEI. Revisit only if the Doctor sets windows of several days. |
 | D4 | Refunds: a **Reembolsar con Mercado Pago** button (explicit Doctor action, API refund), or keep refunds manual in Mercado Pago as with Stripe. | **Button.** One click, idempotent, Doctor-initiated, with manual fallback. Choosing "manual" removes section 4.5 and the refund job. |
 | D5 | Who handles the token: the operator places it in the app-only provider file, or the Doctor pastes it into an encrypted dashboard field. | **Operator places it.** That matches every other provider secret and AGENTS.md (enrollment and deployment are operator-only). A dashboard field would need a new encrypted-secret store and key rotation. |
+
+## 11. Implementation notes (2026-11-04)
+
+- Code: `src/modules/mercado_pago/` (`client.rs`, `worker.rs`, `store.rs`, `http.rs`, `views.rs`), migration `m202611040001_mercado_pago`, worker loop in `main.rs` every 5 s.
+- Deviations from the spec text: no migration guard (SeaORM rejects unknown applied migrations); a preference-creation `4xx` closes the row without a stored notice; the refund button lives on the Appointment detail page (`POST /appointments/{id}/mercado-pago/{payment}/refund`); `/settings/mercado-pago` is read-only.
+- Amounts are sent as JSON numbers from centavos using the shortest round-trip form of the double, which is the exact two-decimal value for prices below 10^13 centavos (unit test round-trips every value up to $10,000.00 plus large samples). Received amounts are parsed back to centavos exactly; more than two decimals is a mismatch.
+- Synthetic evidence: `tests.rs` (config, idempotency keys, amount round trip, exact request shapes against a local Axum provider, untrusted checkout hosts and error statuses) and `worker_tests.rs` (disposable Postgres: booking → preference → WhatsApp link, outage fallback, reschedule, matching vs mismatched payments, idempotent polling, external chargeback, late/duplicate/cancelled refunds on Doctor request, rejected refund, deadline close + late checks, absent configuration, rejected token, startup error without echo).
+- Still open (operator, not claimed by tests): sandbox run with a test seller/buyer, confirming the MX excluded payment-type IDs and `binary_mode`, real refund, rate limits for the 30-second poll, and live acceptance.
